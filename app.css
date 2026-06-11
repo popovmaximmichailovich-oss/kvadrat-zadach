@@ -240,3 +240,182 @@ code { color:#fde68a; }
   .project-form-grid { grid-template-columns: 1fr; }
   .kanban-column { min-width: auto; }
 }
+
+
+
+/* v1.7 Mobile polish */
+html { -webkit-text-size-adjust: 100%; }
+body { overflow-x: hidden; touch-action: manipulation; }
+img, svg, video, canvas { max-width: 100%; height: auto; }
+button, input, select, textarea { min-height: 44px; }
+input, select, textarea { font-size: 16px; } /* prevents iOS input zoom */
+button { -webkit-tap-highlight-color: transparent; }
+.app-shell { overflow-x: clip; }
+.card, .column, .task-card, .summary-card, .dashboard-card { min-width: 0; }
+.task-card, .project-card, .dashboard-card, .summary-card, .column { contain: layout paint; }
+.task-title, .task-note, .badge, .kanban-task-link, .log-row, .member-row { overflow-wrap: anywhere; word-break: break-word; }
+.quick-input { min-width: 0; }
+.task-actions { min-width: 0; }
+.task-actions .mini-btn, .task-actions .ghost, .task-actions .primary { min-width: max-content; }
+.task-dialog { max-height: calc(100dvh - 24px); overflow: auto; padding: 16px; }
+.task-dialog form { display: grid; gap: 12px; }
+.tabs { overscroll-behavior-x: contain; }
+.tab { min-height: 42px; white-space: nowrap; }
+.table-wrap, .kanban-grid { -webkit-overflow-scrolling: touch; }
+.timesheet-table th:first-child, .timesheet-table td:first-child { position: sticky; left: 0; z-index: 1; background: #111827; }
+.timesheet-table th:first-child { z-index: 2; }
+
+@media (max-width: 720px) {
+  :root { --radius: 16px; }
+  body {
+    padding: max(12px, env(safe-area-inset-top)) 10px max(18px, env(safe-area-inset-bottom));
+    background: radial-gradient(circle at top left, #1a2540 0, var(--bg) 52%);
+  }
+
+  .topbar {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 10px;
+    margin: 4px 0 12px;
+  }
+  h1 { font-size: clamp(26px, 9vw, 34px); line-height: 1.02; }
+  .eyebrow { font-size: 10px; letter-spacing: .11em; }
+
+  .quick-add { padding: 12px; border-radius: 18px; }
+  .quick-row { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .primary, .ghost, .danger { width: 100%; justify-content: center; }
+
+  .advanced-grid,
+  .dialog-grid,
+  .project-form-grid,
+  .settings-grid,
+  .timesheet-grid,
+  .timesheet-entry,
+  .grid-135,
+  .grid-2,
+  .matrix-grid,
+  .dashboard-hero,
+  .member-form {
+    grid-template-columns: 1fr !important;
+  }
+
+  .tabs {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    margin: 0 -10px 10px;
+    padding: 10px;
+    background: linear-gradient(180deg, rgba(11,16,32,.98), rgba(11,16,32,.88));
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(14px);
+  }
+  .tab { padding: 9px 12px; border-radius: 999px; font-size: 13px; }
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: 1fr;
+    padding: 10px;
+    gap: 10px;
+  }
+  .stats { gap: 6px; }
+  .stat { font-size: 12px; padding: 7px 9px; }
+  .filters { display: grid; grid-template-columns: 1fr; min-width: 0; width: 100%; }
+
+  .section-head {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    margin: 6px 0;
+  }
+  .section-head h2 { font-size: 20px; }
+
+  .column { min-height: 0; padding: 10px; }
+  .task-card { padding: 10px; border-radius: 14px; }
+  .task-title { font-size: 15px; }
+  .task-meta { gap: 5px; }
+  .badge { font-size: 11px; padding: 4px 7px; }
+
+  .task-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .task-actions::-webkit-scrollbar { display: none; }
+  .mini-btn { flex: 0 0 auto; min-height: 38px; font-size: 12px; }
+
+  .kanban-grid {
+    grid-template-columns: 1fr !important;
+    overflow-x: visible;
+  }
+  .kanban-column { padding: 10px; }
+  .kanban-project { border-radius: 14px; }
+  .kanban-project-title { width: 100%; text-align: left; }
+  .kanban-task-link { min-height: 42px; white-space: normal; text-align: left; }
+
+  .project-card { padding: 12px; }
+  .project-title-row { align-items: flex-start; gap: 8px; }
+  .project-title-row h3 { font-size: 17px; }
+  .project-count { font-size: 12px; }
+  .project-passport { padding: 10px; }
+  .member-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .dashboard-hero { padding: 10px; }
+  .dashboard-hero strong { font-size: 24px; }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .metric-row { grid-template-columns: 1fr 1fr; }
+
+  .timesheet-panel, .settings-panel { padding: 12px; }
+  .table-wrap { max-width: 100%; overflow-x: auto; }
+  .timesheet-table { min-width: 980px; }
+  .split-table { min-width: 680px; }
+  .log-row {
+    grid-template-columns: 1fr !important;
+    align-items: stretch;
+  }
+
+  .task-dialog {
+    width: calc(100vw - 18px);
+    max-height: calc(100dvh - 18px);
+    border-radius: 20px;
+    padding: 12px;
+  }
+  .dialog-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: #111827;
+    padding-bottom: 8px;
+  }
+  .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    background: #111827;
+    padding-top: 8px;
+  }
+  .dialog-actions .primary,
+  .dialog-actions .danger { width: auto; flex: 1 1 0; }
+
+  .sql-box { max-height: 260px; font-size: 11px; }
+}
+
+@media (max-width: 420px) {
+  body { padding-left: 8px; padding-right: 8px; }
+  .tabs { margin-left: -8px; margin-right: -8px; padding-left: 8px; padding-right: 8px; }
+  .quick-add, .toolbar, .settings-panel, .timesheet-panel { border-radius: 16px; }
+  .metric-row { grid-template-columns: 1fr; }
+  .dashboard-hero div { padding: 10px; }
+  .tag-chip { font-size: 12px; padding: 8px 10px; }
+  .task-actions .mini-btn { font-size: 11px; padding: 7px 8px; }
+}
+
+@supports (height: 100dvh) {
+  .task-dialog { max-height: calc(100dvh - 24px); }
+}
