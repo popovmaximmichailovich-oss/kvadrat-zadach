@@ -35,10 +35,10 @@
           <label>Проект
             <input id="fieldProject" list="projectList" placeholder="Например: МТЗ, АПР, Archimedica" />
           </label>
-          <label>Дата плана
+          <label>Старт
             <input id="fieldPlanDate" type="date" />
           </label>
-          <label>Срок
+          <label>Плановая дата завершения
             <input id="fieldDueDate" type="date" />
           </label>
           <label>Статус
@@ -51,7 +51,7 @@
               <option value="done">Выполнено</option>
             </select>
           </label>
-          <label>ABCDE
+          <label>Метод Брайана Трейси (ABCDE)
             <select id="fieldPriority">
               <option value="A">A — критично</option>
               <option value="B">B — важно</option>
@@ -60,7 +60,7 @@
               <option value="E">E — убрать</option>
             </select>
           </label>
-          <label>План дня 1–3–5
+          <label>Метод Криса Гильбо «1–3–5»
             <select id="fieldDayBucket">
               <option value="none">Не назначено</option>
               <option value="one">1 главная</option>
@@ -68,13 +68,13 @@
               <option value="five">5 мелких</option>
             </select>
           </label>
-          <label>Важность
+          <label>Значимость
             <select id="fieldImportance">
               <option value="high">Важно</option>
               <option value="low" selected>Не важно</option>
             </select>
           </label>
-          <label>Срочность
+          <label>Дедлайн
             <select id="fieldUrgency">
               <option value="high">Срочно</option>
               <option value="low" selected>Не срочно</option>
@@ -127,8 +127,8 @@
       </label>
       <div class="advanced-grid dialog-grid">
         <label>Проект <input id="editProject" list="projectList" /></label>
-        <label>Дата плана <input id="editPlanDate" type="date" /></label>
-        <label>Срок <input id="editDueDate" type="date" /></label>
+        <label>Старт <input id="editPlanDate" type="date" /></label>
+        <label>Плановая дата завершения <input id="editDueDate" type="date" /></label>
         <label>Статус
           <select id="editStatus">
             <option value="inbox">Входящие</option>
@@ -139,7 +139,7 @@
             <option value="done">Выполнено</option>
           </select>
         </label>
-        <label>ABCDE
+        <label>Метод Брайана Трейси (ABCDE)
           <select id="editPriority">
             <option value="A">A — критично</option>
             <option value="B">B — важно</option>
@@ -148,7 +148,7 @@
             <option value="E">E — убрать</option>
           </select>
         </label>
-        <label>План дня 1–3–5
+        <label>Метод Криса Гильбо «1–3–5»
           <select id="editDayBucket">
             <option value="none">Не назначено</option>
             <option value="one">1 главная</option>
@@ -156,10 +156,10 @@
             <option value="five">5 мелких</option>
           </select>
         </label>
-        <label>Важность
+        <label>Значимость
           <select id="editImportance"><option value="high">Важно</option><option value="low">Не важно</option></select>
         </label>
-        <label>Срочность
+        <label>Дедлайн
           <select id="editUrgency"><option value="high">Срочно</option><option value="low">Не срочно</option></select>
         </label>
       </div>

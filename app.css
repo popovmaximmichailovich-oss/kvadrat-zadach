@@ -419,3 +419,65 @@ button { -webkit-tap-highlight-color: transparent; }
 @supports (height: 100dvh) {
   .task-dialog { max-height: calc(100dvh - 24px); }
 }
+
+
+/* v1.9 quick tags, colors, kanban fit */
+.quick-tag-add { display:flex; align-items:center; gap:6px; min-width: min(330px, 100%); }
+.quick-tag-add input { min-height:38px; padding:8px 10px; font-size:14px; border-radius:999px; }
+.tag-chip--clear { border-color: rgba(148,163,184,.35); background: rgba(148,163,184,.08); color:#cbd5e1; }
+.project-color-amber { --project-color:#f59e0b; }
+.project-color-yellow { --project-color:#eab308; }
+.project-color-lime { --project-color:#84cc16; }
+.project-color-emerald { --project-color:#10b981; }
+.project-color-teal { --project-color:#14b8a6; }
+.project-color-cyan { --project-color:#06b6d4; }
+.project-color-indigo { --project-color:#6366f1; }
+.project-color-purple { --project-color:#a855f7; }
+.project-color-pink { --project-color:#ec4899; }
+.project-color-rose { --project-color:#f43f5e; }
+
+.kanban-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  overflow-x: visible !important;
+}
+.kanban-column {
+  min-width: 0;
+  padding: 10px;
+}
+.kanban-column h3 { font-size: 15px; }
+.kanban-project {
+  min-width: 0;
+  padding: 8px;
+}
+.kanban-project-title {
+  min-width: 0;
+  width: 100%;
+  font-size: 13px;
+  white-space: normal;
+  text-align: left;
+}
+.kanban-task-link {
+  min-width: 0;
+  width: 100%;
+  white-space: normal;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.25;
+}
+.kanban-task-link em {
+  display:block;
+  margin-top:3px;
+}
+
+@media (max-width: 1180px) and (min-width: 721px) {
+  .kanban-grid { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; gap: 8px !important; }
+  .kanban-column { padding:8px; }
+  .kanban-project-title, .kanban-task-link { font-size:12px; }
+}
+
+@media (max-width: 720px) {
+  .quick-tag-add { width:100%; display:grid; grid-template-columns: 1fr auto; }
+  .quick-tag-add input { width:100%; }
+  .kanban-grid { grid-template-columns: 1fr !important; }
+}

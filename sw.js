@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v1-7-mobile';
+const CACHE = 'kvadrat-zadach-v1-9-tags-terms-kanban';
 const ASSETS = [
   './',
   './index.html',

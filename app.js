@@ -1,4 +1,4 @@
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.9.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -22,6 +22,7 @@ let currentView = 'today';
 let deferredPrompt = null;
 let autoSyncTimer = null;
 let syncInProgress = false;
+let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 
 const $ = (id) => document.getElementById(id);
@@ -55,13 +56,13 @@ function loadSettings() {
       timesheetProjectId: s.timesheetProjectId || s.timesheetProject || 'all',
       autoSync: s.autoSync !== false,
       lastBackupAt: s.lastBackupAt || '',
-      autoArchiveDays: Number(s.autoArchiveDays || 14),
+      autoArchiveDays: Number(s.autoArchiveDays || 90),
       supabaseUrl: s.supabaseUrl || '',
       supabaseAnonKey: s.supabaseAnonKey || '',
       email: s.email || ''
     };
   } catch {
-    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 14 };
+    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90 };
   }
 }
 function persistAll({ renderNow = true, sync = false } = {}) {
@@ -280,12 +281,15 @@ function addTask() {
   const title = $('quickTitle').value.trim();
   if (!title) return;
   const advancedOpen = $('advancedDetails').open;
-  const projectId = advancedOpen ? projectValueFromInput($('fieldProject').value) : '';
+  const isQuickInbox = !advancedOpen;
+  const projectId = advancedOpen ? projectValueFromInput($('fieldProject').value) : selectedQuickProjectId;
   const t = normalizeTask({
     title,
     projectId,
     project: projectName(projectId, ''),
-    planDate: advancedOpen ? $('fieldPlanDate').value : today(),
+    // Быстрый ввод одной строкой — это входящая задача на разбор.
+    // Она не получает дату плана автоматически, чтобы не смешиваться с планом дня.
+    planDate: advancedOpen ? $('fieldPlanDate').value : '',
     dueDate: advancedOpen ? $('fieldDueDate').value : '',
     status: advancedOpen ? $('fieldStatus').value : 'inbox',
     priority: advancedOpen ? $('fieldPriority').value : 'C',
@@ -297,13 +301,22 @@ function addTask() {
   tasks.unshift(t);
   $('quickTitle').value = '';
   $('fieldNote').value = '';
+
+  // Чтобы новая входящая задача была сразу видна в «Разборе»,
+  // сбрасываем фильтры, которые могли скрывать задачи без проекта.
+  if (isQuickInbox) {
+    if ($('searchInput')) $('searchInput').value = '';
+    if ($('projectFilter')) $('projectFilter').value = 'all';
+    currentView = 'inbox';
+  }
+
   saveTasks();
 }
 function deleteTask(id) { updateTask(id, { deletedAt: nowISO() }); }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
 function restoreTask(id) { updateTask(id, { status: 'planned', doneAt: null, archivedAt: null }); }
 function runAutoArchiveCompleted({ persist = false } = {}) {
-  const days = Math.max(1, Number(settings.autoArchiveDays || 14));
+  const days = Math.max(1, Number(settings.autoArchiveDays || 90));
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   let changed = false;
   tasks = tasks.map(t => {
@@ -373,7 +386,7 @@ function taskCard(t) {
       ${t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок: ${dateLabel(t.dueDate)}</span>` : ''}
       ${t.dayBucket !== 'none' ? `<span class="badge">${bucketLabels[t.dayBucket]}</span>` : ''}
       ${t.archivedAt ? `<span class="badge">в автоархиве</span>` : ''}
-      <span class="badge">${t.importance === 'high' ? 'важно' : 'не важно'} / ${t.urgency === 'high' ? 'срочно' : 'не срочно'}</span>
+      <span class="badge">${t.importance === 'high' ? 'значимо' : 'не значимо'} / ${t.urgency === 'high' ? 'дедлайн близко' : 'не дедлайн близко'}</span>
     </div>
     ${t.note ? `<p class="task-note">${escapeHtml(t.note)}</p>` : ''}
     <div class="task-actions">
@@ -411,11 +424,14 @@ function renderStats() {
 function renderQuickTagBars() {
   const chipHtml = favoriteProjects().map(name => {
     const id = ensureProject(name, { persist: false });
-    return `<button class="tag-chip" data-quick-project="${escapeHtml(name)}" data-project-id="${escapeHtml(id)}" type="button">#${escapeHtml(name)}</button>`;
+    const active = selectedQuickProjectId && selectedQuickProjectId === id ? ' active' : '';
+    return `<button class="tag-chip${active}" data-quick-project="${escapeHtml(name)}" data-project-id="${escapeHtml(id)}" type="button">#${escapeHtml(name)}</button>`;
   }).join('');
-  const addHint = `<span class="tag-hint">Быстрые теги подставляют проект. Список меняется в профиле.</span>`;
-  if ($('quickTagBar')) $('quickTagBar').innerHTML = chipHtml + addHint;
-  if ($('editTagBar')) $('editTagBar').innerHTML = chipHtml;
+  const clearBtn = selectedQuickProjectId ? `<button class="tag-chip tag-chip--clear" data-action="clearQuickProject" type="button">Без тега</button>` : '';
+  const addForm = `<span class="quick-tag-add"><input id="quickTagName" placeholder="Новый тег / проект" /><button class="mini-btn" id="addQuickTagBtn" type="button">+ тег</button></span>`;
+  const addHint = `<span class="tag-hint">Выбери тег перед быстрым вводом — задача сразу получит проект и попадёт в «Разбор».</span>`;
+  if ($('quickTagBar')) $('quickTagBar').innerHTML = chipHtml + clearBtn + addForm + addHint;
+  if ($('editTagBar')) $('editTagBar').innerHTML = chipHtml + addForm;
 }
 function renderProjectOptions() {
   const list = activeProjects();
@@ -428,19 +444,29 @@ function renderProjectOptions() {
 function applyQuickProject(name, target='quick') {
   const projectId = ensureProject(name);
   const value = projectName(projectId);
-  if (target === 'edit') $('editProject').value = value;
-  else {
-    $('advancedDetails').open = true;
-    $('fieldProject').value = value;
-    if (!$('fieldPlanDate').value) $('fieldPlanDate').value = today();
-    if ($('fieldStatus').value === 'inbox') $('fieldStatus').value = 'planned';
+  if (target === 'edit') {
+    $('editProject').value = value;
+  } else {
+    selectedQuickProjectId = projectId;
+    if ($('fieldProject')) $('fieldProject').value = value;
+    renderQuickTagBars();
   }
+}
+function createQuickTagFromInput() {
+  const input = $('quickTagName');
+  const name = input?.value.trim();
+  if (!name) return alert('Укажи название тега / проекта.');
+  const projectId = ensureProject(name);
+  selectedQuickProjectId = projectId;
+  if (!favoriteProjects().includes(name)) settings.quickProjects = [...favoriteProjects(), name];
+  if (input) input.value = '';
+  persistAll({ renderNow: true, sync: true });
 }
 function renderToday() {
   const d = currentView === 'tomorrow' ? addDays(1) : today();
   const title = currentView === 'tomorrow' ? 'Завтра' : 'Сегодня';
   const list = visibleTasks().filter(t => t.status !== 'done' && t.planDate === d);
-  return `<section class="section-head"><div><h2>${title}</h2><p>План дня по Айви Ли + 1–3–5: сначала главное, потом важное, потом мелкое.</p></div></section>
+  return `<section class="section-head"><div><h2>${title}</h2><p>План дня по Айви Ли и методу Криса Гильбо «1–3–5»: сначала главное, потом значимое, потом мелкое.</p></div></section>
   <div class="grid-135">
     <section class="column accent-column"><h3>1 главная</h3><p class="column-sub">Одна задача, которая двигает день.</p>${listHtml(list.filter(t => t.dayBucket === 'one'), 'Главная задача не выбрана')}</section>
     <section class="column"><h3>3 важные</h3><p class="column-sub">То, что нужно закрыть без героизма.</p>${listHtml(list.filter(t => t.dayBucket === 'three'), 'Важные задачи не выбраны')}</section>
@@ -455,17 +481,17 @@ function renderWeek() {
 }
 function renderInbox() {
   const list = visibleTasks().filter(t => t.status === 'inbox');
-  return `<section class="section-head"><div><h2>Разбор входящих</h2><p>Сюда попадает всё, что записано одной строкой. Потом назначаешь проект, дату и приоритет.</p></div></section>${listHtml(list, 'Входящие разобраны')}`;
+  return `<section class="section-head"><div><h2>Разбор входящих</h2><p>Сюда попадает быстрый ввод одной строкой. Потом назначаешь проект, дату, приоритет и переводишь задачу в план.</p></div></section>${listHtml(list, 'Входящие разобраны')}`;
 }
 function renderMatrix() {
   const list = visibleTasks().filter(t => t.status !== 'done');
   const q = (importance, urgency) => list.filter(t => t.importance === importance && t.urgency === urgency);
-  return `<section class="section-head"><div><h2>Матрица Эйзенхауэра</h2><p>Важно/срочно — сделать. Важно/не срочно — запланировать. Срочно/не важно — делегировать. Остальное — убрать.</p></div></section>
+  return `<section class="section-head"><div><h2>Матрица Эйзенхауэра</h2><p>Высокая значимость + близкий дедлайн — сделать. Высокая значимость без дедлайна — запланировать. Низкая значимость с дедлайном — делегировать. Остальное — убрать.</p></div></section>
   <div class="matrix-grid">
-    <section class="column"><h3>Важно и срочно</h3><p class="column-sub">Сделать сейчас</p>${listHtml(q('high','high'), 'Пусто')}</section>
-    <section class="column"><h3>Важно, не срочно</h3><p class="column-sub">Запланировать</p>${listHtml(q('high','low'), 'Пусто')}</section>
-    <section class="column"><h3>Срочно, не важно</h3><p class="column-sub">Делегировать / ограничить</p>${listHtml(q('low','high'), 'Пусто')}</section>
-    <section class="column"><h3>Не важно, не срочно</h3><p class="column-sub">Убрать</p>${listHtml(q('low','low'), 'Пусто')}</section>
+    <section class="column"><h3>Важно и дедлайн близко</h3><p class="column-sub">Сделать сейчас</p>${listHtml(q('high','high'), 'Пусто')}</section>
+    <section class="column"><h3>Важно, не дедлайн близко</h3><p class="column-sub">Запланировать</p>${listHtml(q('high','low'), 'Пусто')}</section>
+    <section class="column"><h3>Срочно, не значимо</h3><p class="column-sub">Делегировать / ограничить</p>${listHtml(q('low','high'), 'Пусто')}</section>
+    <section class="column"><h3>Не значимо, не дедлайн близко</h3><p class="column-sub">Убрать</p>${listHtml(q('low','low'), 'Пусто')}</section>
   </div>`;
 }
 
@@ -506,7 +532,7 @@ function renderDashboard() {
   const totalOpen = activeTasks().filter(t => t.status !== 'done').length;
   const totalOverdue = activeTasks().filter(isOverdue).length;
   const totalHours = activeWorkLogs().filter(l => l.date.slice(0,7) === currentMonth() && l.mark === 'Я').reduce((s,l) => s + Number(l.hours || 0), 0);
-  return `<section class="section-head"><div><h2>Дашборд 12 проектов</h2><p>Сводная управленческая панель: открытые задачи, просрочка, сделано за неделю и часы за месяц.</p></div></section>
+  return `<section class="section-head"><div><h2>Дашборд проектов</h2><p>Сводная управленческая панель: открытые задачи, просрочка, сделано за неделю и часы за месяц.</p></div></section>
     <div class="dashboard-hero card"><div><strong>${list.length}</strong><span>активных проектов</span></div><div><strong>${totalOpen}</strong><span>открытых задач</span></div><div><strong>${totalOverdue}</strong><span>просрочено</span></div><div><strong>${totalHours}</strong><span>часов за месяц</span></div></div>
     <div class="dashboard-grid">${list.map(projectMiniCard).join('') || '<div class="empty">Создай проекты во вкладке «Проекты»</div>'}</div>`;
 }
@@ -576,7 +602,7 @@ function renderProjectMembers(projectId) {
 }
 function renderProjectPassport(p) {
   const statusOptions = Object.entries(projectStatusLabels).map(([k,v]) => `<option value="${k}" ${p.status === k ? 'selected' : ''}>${v}</option>`).join('');
-  const colors = [['orange','Оранжевый'],['violet','Фиолетовый'],['blue','Синий'],['green','Зелёный'],['red','Красный'],['gray','Серый']];
+  const colors = [['orange','Оранжевый'],['amber','Янтарный'],['yellow','Жёлтый'],['lime','Лайм'],['green','Зелёный'],['emerald','Изумрудный'],['teal','Бирюзовый'],['cyan','Голубой'],['blue','Синий'],['indigo','Индиго'],['violet','Фиолетовый'],['purple','Пурпурный'],['pink','Розовый'],['rose','Роза'],['red','Красный'],['gray','Серый']];
   const colorOptions = colors.map(([k,v]) => `<option value="${k}" ${p.color === k ? 'selected' : ''}>${v}</option>`).join('');
   return `<details class="project-passport">
     <summary>Паспорт проекта</summary>
@@ -632,7 +658,9 @@ function renderProjects() {
         <label>Название проекта *<input id="newProjectName" placeholder="Например: МЗМО, РДКБ, Сколтех" /></label>
         <label>Код / быстрый тег<input id="newProjectCode" placeholder="Например: МЗМО" /></label>
         <label>Статус<select id="newProjectStatus"><option value="active">Активный</option><option value="paused">Пауза</option><option value="archived">Архив</option></select></label>
-        <label>Цвет<select id="newProjectColor"><option value="orange">Оранжевый</option><option value="violet">Фиолетовый</option><option value="blue">Синий</option><option value="green">Зелёный</option><option value="red">Красный</option><option value="gray">Серый</option></select></label>
+        <label>Цвет<select id="newProjectColor">
+          <option value="orange">Оранжевый</option><option value="amber">Янтарный</option><option value="yellow">Жёлтый</option><option value="lime">Лайм</option><option value="green">Зелёный</option><option value="emerald">Изумрудный</option><option value="teal">Бирюзовый</option><option value="cyan">Голубой</option><option value="blue">Синий</option><option value="indigo">Индиго</option><option value="violet">Фиолетовый</option><option value="purple">Пурпурный</option><option value="pink">Розовый</option><option value="rose">Роза</option><option value="red">Красный</option><option value="gray">Серый</option>
+        </select></label>
         <label>Ответственный<input id="newProjectOwner" placeholder="Кто ведёт" /></label>
         <label>Заказчик / направление<input id="newProjectCustomer" placeholder="Для кого / направление" /></label>
         <label>Стадия<input id="newProjectStage" placeholder="МТЗ, АПР, проектирование..." /></label>
@@ -749,7 +777,7 @@ function renderSettings() {
       <label>Подразделение <input id="profileDepartment" value="${escapeHtml(settings.department || '')}" /></label>
       <label>Часы по умолчанию <input id="profileDefaultHours" type="number" min="0" step="0.5" value="${settings.defaultHours || 8}" /></label>
       <label>Быстрые проекты / теги <input id="profileQuickProjects" value="${escapeHtml(favoriteProjects().join(', '))}" placeholder="МЗМО, РДКБ, Сколтех" /></label>
-      <label>Автоархив выполненных задач, дней <input id="profileAutoArchiveDays" type="number" min="1" step="1" value="${settings.autoArchiveDays || 14}" /></label>
+      <label>Автоархив выполненных задач, дней <input id="profileAutoArchiveDays" type="number" min="1" step="1" value="${settings.autoArchiveDays || 90}" /><small>По умолчанию 90 дней — один квартал. При изменении срока приложение выгружает резервную копию.</small></label>
       <label class="checkline"><input id="profileAutoSync" type="checkbox" ${settings.autoSync ? 'checked' : ''}/> Автосинхронизация</label>
       <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button></div>
     </div>
@@ -842,6 +870,7 @@ function bindDynamicActions() {
   document.querySelectorAll('[data-action]').forEach(btn => btn.onclick = () => {
     const id = btn.dataset.id;
     const action = btn.dataset.action;
+    if (action === 'clearQuickProject') { selectedQuickProjectId = ''; renderQuickTagBars(); }
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
@@ -866,11 +895,18 @@ function bindDynamicActions() {
     applyQuickProject(btn.dataset.quickProject || '', target);
   });
   if ($('createProjectBtn')) $('createProjectBtn').onclick = createProjectFromForm;
+  if ($('addQuickTagBtn')) $('addQuickTagBtn').onclick = createQuickTagFromInput;
+  if ($('quickTagName')) $('quickTagName').addEventListener('keydown', e => { if (e.key === 'Enter') createQuickTagFromInput(); });
   if ($('addWorkLog')) $('addWorkLog').onclick = () => addWorkLog({ date: $('workDate').value, project: $('workProject').value, hours: $('workHours').value, mark: $('workMark').value, comment: $('workComment').value });
   if ($('saveTimesheetMonth')) $('saveTimesheetMonth').onclick = () => { settings.timesheetMonth = $('timesheetMonth').value || currentMonth(); settings.timesheetProjectId = $('timesheetProject') ? $('timesheetProject').value : 'all'; saveSettings(); render(); };
   if ($('exportTimesheet')) $('exportTimesheet').onclick = () => exportTimesheetXml(settings.timesheetMonth || currentMonth(), settings.timesheetProjectId || 'all');
   if ($('exportLogsCsv')) $('exportLogsCsv').onclick = () => exportLogsCsv(settings.timesheetMonth || currentMonth(), settings.timesheetProjectId || 'all');
   if ($('saveProfile')) $('saveProfile').onclick = () => {
+    const oldArchiveDays = Number(settings.autoArchiveDays || 90);
+    const newArchiveDays = Number($('profileAutoArchiveDays').value || 90);
+    if (oldArchiveDays !== newArchiveDays) {
+      exportBackup('before-autoarchive-period-change');
+    }
     settings.fio = $('profileFio').value.trim();
     settings.position = $('profilePosition').value.trim();
     settings.institution = $('profileInstitution').value.trim();
@@ -878,11 +914,11 @@ function bindDynamicActions() {
     settings.defaultHours = Number($('profileDefaultHours').value || 8);
     settings.quickProjects = $('profileQuickProjects').value.split(',').map(x => x.trim()).filter(Boolean);
     settings.autoSync = $('profileAutoSync').checked;
-    settings.autoArchiveDays = Number($('profileAutoArchiveDays').value || 14);
+    settings.autoArchiveDays = newArchiveDays;
     runAutoArchiveCompleted({ persist: false });
     favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
     persistAll({ renderNow: true, sync: false });
-    alert('Профиль сохранён.');
+    alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
   if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = $('syncUrl').value.trim(); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
@@ -894,11 +930,11 @@ function bindDynamicActions() {
   if ($('importJson')) $('importJson').onchange = importJson;
 }
 function downloadText(filename, text, type='text/plain;charset=utf-8') { const blob = new Blob([text], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href); }
-function exportBackup() {
+function exportBackup(reason='backup') {
   settings.lastBackupAt = nowISO();
   persistAll({ renderNow: false, sync: false });
-  const data = { kind: 'kvadrat-zadach-backup', version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, tasks, workLogs, settings };
-  downloadText(`kvadrat-zadach-backup-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
+  const data = { kind: 'kvadrat-zadach-backup', reason, version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, tasks, workLogs, settings };
+  downloadText(`kvadrat-zadach-${reason}-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
 }
 async function importJson(e) {
   const file = e.target.files[0]; if (!file) return;
