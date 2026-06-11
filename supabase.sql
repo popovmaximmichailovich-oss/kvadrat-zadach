@@ -1,7 +1,23 @@
+create table if not exists public.projects (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  name text not null,
+  code text,
+  status text not null default 'active' check (status in ('active','paused','archived')),
+  owner text,
+  description text,
+  note text,
+  color text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
 create table if not exists public.tasks (
   id uuid primary key,
   user_id uuid not null default auth.uid(),
   title text not null,
+  project_id uuid references public.projects(id) on delete set null,
   project text,
   due_date date,
   plan_date date,
@@ -22,7 +38,8 @@ create table if not exists public.work_logs (
   id uuid primary key,
   user_id uuid not null default auth.uid(),
   work_date date not null,
-  project text not null,
+  project_id uuid references public.projects(id) on delete set null,
+  project text,
   hours numeric(5,2) not null default 8,
   mark text not null default 'Я' check (mark in ('Я','В','Б','ОТ','НН')),
   comment text,
@@ -31,8 +48,24 @@ create table if not exists public.work_logs (
   deleted_at timestamptz
 );
 
+-- Migrations for existing v1.4 installations
+alter table public.tasks add column if not exists project_id uuid references public.projects(id) on delete set null;
+alter table public.work_logs add column if not exists project_id uuid references public.projects(id) on delete set null;
+alter table public.tasks alter column order_index type bigint using order_index::bigint;
+
+alter table public.projects enable row level security;
 alter table public.tasks enable row level security;
 alter table public.work_logs enable row level security;
+
+drop policy if exists "Users can select own projects" on public.projects;
+drop policy if exists "Users can insert own projects" on public.projects;
+drop policy if exists "Users can update own projects" on public.projects;
+drop policy if exists "Users can delete own projects" on public.projects;
+
+create policy "Users can select own projects" on public.projects for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own projects" on public.projects for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own projects" on public.projects for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own projects" on public.projects for delete to authenticated using ((select auth.uid()) = user_id);
 
 drop policy if exists "Users can select own tasks" on public.tasks;
 drop policy if exists "Users can insert own tasks" on public.tasks;
@@ -52,8 +85,3 @@ create policy "Users can select own work logs" on public.work_logs for select to
 create policy "Users can insert own work logs" on public.work_logs for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "Users can update own work logs" on public.work_logs for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "Users can delete own work logs" on public.work_logs for delete to authenticated using ((select auth.uid()) = user_id);
-
-
--- Migration for existing v1.3 installations:
--- Date.now() values are larger than PostgreSQL integer can store.
-alter table public.tasks alter column order_index type bigint using order_index::bigint;
