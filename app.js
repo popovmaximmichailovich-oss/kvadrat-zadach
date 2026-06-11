@@ -1,4 +1,4 @@
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
@@ -823,7 +823,13 @@ async function syncNow() {
   const localTasks = tasks.map(t => taskToRow(normalizeTask(t), user.id));
   if (localTasks.length) {
     const { error: upsertError } = await client.from('tasks').upsert(localTasks, { onConflict: 'id' });
-    if (upsertError) return alert(upsertError.message);
+    if (upsertError) {
+      const msg = upsertError.message || '';
+      if (msg.includes('out of range for type integer')) {
+        return alert('Ошибка синхронизации: поле order_index в Supabase создано как integer. Открой Supabase → SQL Editor и выполни: alter table public.tasks alter column order_index type bigint using order_index::bigint; Потом нажми «Синхронизировать» снова.');
+      }
+      return alert(upsertError.message);
+    }
   }
   const localLogs = workLogs.map(l => workLogToRow(normalizeWorkLog(l), user.id));
   if (localLogs.length) {
@@ -857,7 +863,7 @@ const SQL_TEMPLATE = `create table if not exists public.tasks (
   urgency text not null default 'low' check (urgency in ('high','low')),
   note text,
   day_bucket text not null default 'none' check (day_bucket in ('none','one','three','five')),
-  order_index integer default 0,
+  order_index bigint default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   done_at timestamptz,

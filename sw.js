@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v1-3';
+const CACHE = 'kvadrat-zadach-v1-4';
 const ASSETS = [
   './',
   './index.html',

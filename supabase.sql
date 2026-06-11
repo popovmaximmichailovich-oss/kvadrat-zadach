@@ -11,7 +11,7 @@ create table if not exists public.tasks (
   urgency text not null default 'low' check (urgency in ('high','low')),
   note text,
   day_bucket text not null default 'none' check (day_bucket in ('none','one','three','five')),
-  order_index integer default 0,
+  order_index bigint default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   done_at timestamptz,
@@ -52,3 +52,8 @@ create policy "Users can select own work logs" on public.work_logs for select to
 create policy "Users can insert own work logs" on public.work_logs for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "Users can update own work logs" on public.work_logs for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "Users can delete own work logs" on public.work_logs for delete to authenticated using ((select auth.uid()) = user_id);
+
+
+-- Migration for existing v1.3 installations:
+-- Date.now() values are larger than PostgreSQL integer can store.
+alter table public.tasks alter column order_index type bigint using order_index::bigint;
