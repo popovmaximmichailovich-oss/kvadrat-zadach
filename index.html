@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Квадрат задач" />
+  <title>Квадрат задач</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="assets/icon-180.png" />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Личный диспетчер задач и табель проекта</p>
+        <h1>Квадрат задач</h1>
+      </div>
+      <button id="installBtn" class="ghost hidden" type="button">Установить</button>
+    </header>
+
+    <section class="quick-add card">
+      <div class="quick-row">
+        <input id="quickTitle" class="quick-input" autocomplete="off" placeholder="Записать задачу одной строкой…" />
+        <button id="quickAddBtn" class="primary" type="button">Добавить</button>
+      </div>
+      <div id="quickTagBar" class="tag-bar" aria-label="Быстрые теги проектов"></div>
+      <details id="advancedDetails" class="advanced">
+        <summary>Заполнить сразу</summary>
+        <div class="advanced-grid">
+          <label>Проект
+            <input id="fieldProject" list="projectList" placeholder="Например: МТЗ, АПР, Archimedica" />
+          </label>
+          <label>Дата плана
+            <input id="fieldPlanDate" type="date" />
+          </label>
+          <label>Срок
+            <input id="fieldDueDate" type="date" />
+          </label>
+          <label>Статус
+            <select id="fieldStatus">
+              <option value="inbox">Входящие</option>
+              <option value="planned">Запланировано</option>
+              <option value="doing">В работе</option>
+              <option value="delegated">Делегировано</option>
+              <option value="deferred">Отложено</option>
+              <option value="done">Выполнено</option>
+            </select>
+          </label>
+          <label>ABCDE
+            <select id="fieldPriority">
+              <option value="A">A — критично</option>
+              <option value="B">B — важно</option>
+              <option value="C" selected>C — желательно</option>
+              <option value="D">D — делегировать</option>
+              <option value="E">E — убрать</option>
+            </select>
+          </label>
+          <label>План дня 1–3–5
+            <select id="fieldDayBucket">
+              <option value="none">Не назначено</option>
+              <option value="one">1 главная</option>
+              <option value="three">3 важные</option>
+              <option value="five">5 мелких</option>
+            </select>
+          </label>
+          <label>Важность
+            <select id="fieldImportance">
+              <option value="high">Важно</option>
+              <option value="low" selected>Не важно</option>
+            </select>
+          </label>
+          <label>Срочность
+            <select id="fieldUrgency">
+              <option value="high">Срочно</option>
+              <option value="low" selected>Не срочно</option>
+            </select>
+          </label>
+        </div>
+        <label class="full-label">Комментарий
+          <textarea id="fieldNote" rows="2" placeholder="Контекст, кому написать, где проверить, что приложить…"></textarea>
+        </label>
+      </details>
+    </section>
+
+    <nav class="tabs" aria-label="Разделы приложения">
+      <button class="tab active" data-view="today" type="button">Сегодня</button>
+      <button class="tab" data-view="tomorrow" type="button">Завтра</button>
+      <button class="tab" data-view="week" type="button">Неделя</button>
+      <button class="tab" data-view="inbox" type="button">Разбор</button>
+      <button class="tab" data-view="matrix" type="button">Эйзенхауэр</button>
+      <button class="tab" data-view="kanban" type="button">Канбан</button>
+      <button class="tab" data-view="projects" type="button">Проекты</button>
+      <button class="tab" data-view="timesheet" type="button">Табель</button>
+      <button class="tab" data-view="archive" type="button">Архив</button>
+      <button class="tab" data-view="settings" type="button">Синхронизация</button>
+    </nav>
+
+    <section class="toolbar card">
+      <div class="stats" id="stats"></div>
+      <div class="filters">
+        <input id="searchInput" placeholder="Поиск" />
+        <select id="projectFilter"><option value="all">Все проекты</option></select>
+      </div>
+    </section>
+
+    <main id="viewRoot" class="view-root"></main>
+  </div>
+
+  <dialog id="taskDialog" class="task-dialog">
+    <form method="dialog" id="editForm">
+      <header class="dialog-head">
+        <h2>Редактировать задачу</h2>
+        <button type="button" class="icon-btn" id="closeDialogBtn" aria-label="Закрыть">×</button>
+      </header>
+      <input type="hidden" id="editId" />
+      <div id="editTagBar" class="tag-bar tag-bar--soft" aria-label="Быстрые теги проектов"></div>
+      <label>Задача
+        <input id="editTitle" required />
+      </label>
+      <div class="advanced-grid dialog-grid">
+        <label>Проект <input id="editProject" list="projectList" /></label>
+        <label>Дата плана <input id="editPlanDate" type="date" /></label>
+        <label>Срок <input id="editDueDate" type="date" /></label>
+        <label>Статус
+          <select id="editStatus">
+            <option value="inbox">Входящие</option>
+            <option value="planned">Запланировано</option>
+            <option value="doing">В работе</option>
+            <option value="delegated">Делегировано</option>
+            <option value="deferred">Отложено</option>
+            <option value="done">Выполнено</option>
+          </select>
+        </label>
+        <label>ABCDE
+          <select id="editPriority">
+            <option value="A">A — критично</option>
+            <option value="B">B — важно</option>
+            <option value="C">C — желательно</option>
+            <option value="D">D — делегировать</option>
+            <option value="E">E — убрать</option>
+          </select>
+        </label>
+        <label>План дня 1–3–5
+          <select id="editDayBucket">
+            <option value="none">Не назначено</option>
+            <option value="one">1 главная</option>
+            <option value="three">3 важные</option>
+            <option value="five">5 мелких</option>
+          </select>
+        </label>
+        <label>Важность
+          <select id="editImportance"><option value="high">Важно</option><option value="low">Не важно</option></select>
+        </label>
+        <label>Срочность
+          <select id="editUrgency"><option value="high">Срочно</option><option value="low">Не срочно</option></select>
+        </label>
+      </div>
+      <label>Комментарий
+        <textarea id="editNote" rows="4"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button id="deleteTaskBtn" class="danger" type="button">Удалить</button>
+        <button class="primary" type="submit">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <datalist id="projectList"></datalist>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js"></script>
+</body>
+</html>
