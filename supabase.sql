@@ -10,6 +10,7 @@ create table if not exists public.projects (
   start_date date,
   due_date date,
   result text,
+  next_action text,
   description text,
   note text,
   color text,
@@ -23,6 +24,7 @@ alter table public.projects add column if not exists stage text;
 alter table public.projects add column if not exists start_date date;
 alter table public.projects add column if not exists due_date date;
 alter table public.projects add column if not exists result text;
+alter table public.projects add column if not exists next_action text;
 alter table public.projects add column if not exists color text;
 
 create table if not exists public.tasks (
@@ -74,6 +76,54 @@ create table if not exists public.project_members (
   deleted_at timestamptz
 );
 
+create table if not exists public.promises (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  project_id uuid references public.projects(id) on delete set null,
+  direction text not null default 'to_me' check (direction in ('to_me','me_to')),
+  who text,
+  text text not null,
+  promised_date date,
+  check_date date,
+  status text not null default 'open' check (status in ('open','done','cancelled')),
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create table if not exists public.decisions (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  project_id uuid references public.projects(id) on delete set null,
+  decision_date date,
+  title text not null,
+  text text,
+  owner text,
+  impact text,
+  next_action text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create table if not exists public.task_templates (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  name text not null,
+  title text,
+  project_id uuid references public.projects(id) on delete set null,
+  status text not null default 'inbox',
+  priority text not null default 'C',
+  importance text not null default 'low',
+  urgency text not null default 'low',
+  day_bucket text not null default 'none',
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
 -- Migrations for existing installations
 alter table public.tasks add column if not exists project_id uuid references public.projects(id) on delete set null;
 alter table public.tasks add column if not exists archived_at timestamptz;
@@ -82,6 +132,9 @@ alter table public.tasks alter column order_index type bigint using order_index:
 
 alter table public.projects enable row level security;
 alter table public.project_members enable row level security;
+alter table public.promises enable row level security;
+alter table public.decisions enable row level security;
+alter table public.task_templates enable row level security;
 alter table public.tasks enable row level security;
 alter table public.work_logs enable row level security;
 
@@ -93,6 +146,18 @@ drop policy if exists "Users can select own project members" on public.project_m
 drop policy if exists "Users can insert own project members" on public.project_members;
 drop policy if exists "Users can update own project members" on public.project_members;
 drop policy if exists "Users can delete own project members" on public.project_members;
+drop policy if exists "Users can select own promises" on public.promises;
+drop policy if exists "Users can insert own promises" on public.promises;
+drop policy if exists "Users can update own promises" on public.promises;
+drop policy if exists "Users can delete own promises" on public.promises;
+drop policy if exists "Users can select own decisions" on public.decisions;
+drop policy if exists "Users can insert own decisions" on public.decisions;
+drop policy if exists "Users can update own decisions" on public.decisions;
+drop policy if exists "Users can delete own decisions" on public.decisions;
+drop policy if exists "Users can select own task templates" on public.task_templates;
+drop policy if exists "Users can insert own task templates" on public.task_templates;
+drop policy if exists "Users can update own task templates" on public.task_templates;
+drop policy if exists "Users can delete own task templates" on public.task_templates;
 drop policy if exists "Users can select own tasks" on public.tasks;
 drop policy if exists "Users can insert own tasks" on public.tasks;
 drop policy if exists "Users can update own tasks" on public.tasks;
@@ -111,6 +176,21 @@ create policy "Users can select own project members" on public.project_members f
 create policy "Users can insert own project members" on public.project_members for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "Users can update own project members" on public.project_members for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "Users can delete own project members" on public.project_members for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own promises" on public.promises for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own promises" on public.promises for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own promises" on public.promises for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own promises" on public.promises for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own decisions" on public.decisions for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own decisions" on public.decisions for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own decisions" on public.decisions for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own decisions" on public.decisions for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own task templates" on public.task_templates for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own task templates" on public.task_templates for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own task templates" on public.task_templates for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own task templates" on public.task_templates for delete to authenticated using ((select auth.uid()) = user_id);
 
 create policy "Users can select own tasks" on public.tasks for select to authenticated using ((select auth.uid()) = user_id);
 create policy "Users can insert own tasks" on public.tasks for insert to authenticated with check ((select auth.uid()) = user_id);

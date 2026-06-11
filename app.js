@@ -1,8 +1,11 @@
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '2.0.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
 const PROJECT_MEMBERS_KEY = 'eisenhower_project_members_v1';
+const PROMISES_KEY = 'eisenhower_promises_v1';
+const DECISIONS_KEY = 'eisenhower_decisions_v1';
+const TEMPLATES_KEY = 'eisenhower_templates_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
 
 const statusLabels = {
@@ -16,9 +19,12 @@ const projectStatusLabels = { active: 'Активный', paused: 'Пауза', 
 let settings = loadSettings();
 let projects = loadProjects();
 let projectMembers = loadProjectMembers();
+let promises = loadPromises();
+let decisions = loadDecisions();
+let taskTemplates = loadTaskTemplates();
 let tasks = loadTasks();
 let workLogs = loadWorkLogs();
-let currentView = 'today';
+let currentView = 'commander';
 let deferredPrompt = null;
 let autoSyncTimer = null;
 let syncInProgress = false;
@@ -42,6 +48,9 @@ function loadArray(key) {
 function loadTasks() { return loadArray(STORAGE_KEY); }
 function loadProjects() { return loadArray(PROJECTS_KEY); }
 function loadProjectMembers() { return loadArray(PROJECT_MEMBERS_KEY); }
+function loadPromises() { return loadArray(PROMISES_KEY); }
+function loadDecisions() { return loadArray(DECISIONS_KEY); }
+function loadTaskTemplates() { return loadArray(TEMPLATES_KEY); }
 function loadWorkLogs() { return loadArray(WORKLOGS_KEY); }
 function loadSettings() {
   try {
@@ -59,10 +68,11 @@ function loadSettings() {
       autoArchiveDays: Number(s.autoArchiveDays || 90),
       supabaseUrl: s.supabaseUrl || '',
       supabaseAnonKey: s.supabaseAnonKey || '',
-      email: s.email || ''
+      email: s.email || '',
+      kanbanMode: s.kanbanMode || 'compact'
     };
   } catch {
-    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90 };
+    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact' };
   }
 }
 function persistAll({ renderNow = true, sync = false } = {}) {
@@ -70,6 +80,9 @@ function persistAll({ renderNow = true, sync = false } = {}) {
   localStorage.setItem(WORKLOGS_KEY, JSON.stringify(workLogs));
   localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
   localStorage.setItem(PROJECT_MEMBERS_KEY, JSON.stringify(projectMembers));
+  localStorage.setItem(PROMISES_KEY, JSON.stringify(promises));
+  localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions));
+  localStorage.setItem(TEMPLATES_KEY, JSON.stringify(taskTemplates));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   if (renderNow) render();
   if (sync) scheduleAutoSync();
@@ -92,6 +105,7 @@ function normalizeProject(p) {
     startDate: p.startDate || p.start_date || '',
     dueDate: p.dueDate || p.due_date || '',
     result: p.result || '',
+    nextAction: p.nextAction || p.next_action || '',
     description: p.description || '',
     note: p.note || '',
     color: p.color || 'orange',
@@ -111,6 +125,54 @@ function normalizeProjectMember(m) {
     createdAt: m.createdAt || m.created_at || nowISO(),
     updatedAt: m.updatedAt || m.updated_at || nowISO(),
     deletedAt: m.deletedAt || m.deleted_at || null
+  };
+}
+function normalizePromise(p) {
+  return {
+    id: p.id || uid(),
+    projectId: p.projectId || p.project_id || '',
+    direction: p.direction || 'to_me',
+    who: String(p.who || '').trim(),
+    text: String(p.text || '').trim(),
+    promisedDate: p.promisedDate || p.promised_date || today(),
+    checkDate: p.checkDate || p.check_date || '',
+    status: p.status || 'open',
+    note: p.note || '',
+    createdAt: p.createdAt || p.created_at || nowISO(),
+    updatedAt: p.updatedAt || p.updated_at || nowISO(),
+    deletedAt: p.deletedAt || p.deleted_at || null
+  };
+}
+function normalizeDecision(d) {
+  return {
+    id: d.id || uid(),
+    projectId: d.projectId || d.project_id || '',
+    date: d.date || d.decision_date || today(),
+    title: String(d.title || '').trim() || 'Решение',
+    text: d.text || '',
+    owner: d.owner || '',
+    impact: d.impact || '',
+    nextAction: d.nextAction || d.next_action || '',
+    createdAt: d.createdAt || d.created_at || nowISO(),
+    updatedAt: d.updatedAt || d.updated_at || nowISO(),
+    deletedAt: d.deletedAt || d.deleted_at || null
+  };
+}
+function normalizeTaskTemplate(t) {
+  return {
+    id: t.id || uid(),
+    name: String(t.name || '').trim() || 'Шаблон',
+    title: t.title || '',
+    projectId: t.projectId || t.project_id || '',
+    status: t.status || 'inbox',
+    priority: t.priority || 'C',
+    importance: t.importance || 'low',
+    urgency: t.urgency || 'low',
+    dayBucket: t.dayBucket || t.day_bucket || 'none',
+    note: t.note || '',
+    createdAt: t.createdAt || t.created_at || nowISO(),
+    updatedAt: t.updatedAt || t.updated_at || nowISO(),
+    deletedAt: t.deletedAt || t.deleted_at || null
   };
 }
 function normalizeTask(t) {
@@ -162,6 +224,9 @@ function activeProjects({ includeArchived = false } = {}) {
   return projects.filter(p => !p.deletedAt && (includeArchived || p.status !== 'archived')).sort((a,b) => a.name.localeCompare(b.name, 'ru'));
 }
 function activeProjectMembers(projectId='') { return projectMembers.filter(m => !m.deletedAt && (!projectId || m.projectId === projectId)).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
+function activePromises(projectId='') { return promises.filter(p => !p.deletedAt && (!projectId || p.projectId === projectId)).sort((a,b) => (a.checkDate || '9999-12-31').localeCompare(b.checkDate || '9999-12-31')); }
+function activeDecisions(projectId='') { return decisions.filter(d => !d.deletedAt && (!projectId || d.projectId === projectId)).sort((a,b) => (b.date || '').localeCompare(a.date || '')); }
+function activeTaskTemplates() { return taskTemplates.filter(t => !t.deletedAt).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
 function activeTasks() { return tasks.filter(t => !t.deletedAt); }
 function activeWorkLogs() { return workLogs.filter(l => !l.deletedAt); }
 function projectById(id) { return id ? projects.find(p => p.id === id && !p.deletedAt) : null; }
@@ -233,6 +298,7 @@ function saveProjectPassport(projectId) {
     startDate: $(`projectStart_${projectId}`)?.value || '',
     dueDate: $(`projectDue_${projectId}`)?.value || '',
     result: $(`projectResult_${projectId}`)?.value.trim() || '',
+    nextAction: $(`projectNext_${projectId}`)?.value.trim() || '',
     color: $(`projectColor_${projectId}`)?.value || 'orange',
     description: $(`projectDescription_${projectId}`)?.value.trim() || '',
     note: $(`projectNote_${projectId}`)?.value.trim() || ''
@@ -282,21 +348,22 @@ function addTask() {
   if (!title) return;
   const advancedOpen = $('advancedDetails').open;
   const isQuickInbox = !advancedOpen;
-  const projectId = advancedOpen ? projectValueFromInput($('fieldProject').value) : selectedQuickProjectId;
+  const quickAnalysis = advancedOpen ? {} : analyzeQuickTaskText(title);
+  const projectId = advancedOpen ? projectValueFromInput($('fieldProject').value) : (quickAnalysis.projectId || selectedQuickProjectId || '');
   const t = normalizeTask({
     title,
     projectId,
     project: projectName(projectId, ''),
     // Быстрый ввод одной строкой — это входящая задача на разбор.
     // Она не получает дату плана автоматически, чтобы не смешиваться с планом дня.
-    planDate: advancedOpen ? $('fieldPlanDate').value : '',
+    planDate: advancedOpen ? $('fieldPlanDate').value : (quickAnalysis.planDate || ''),
     dueDate: advancedOpen ? $('fieldDueDate').value : '',
     status: advancedOpen ? $('fieldStatus').value : 'inbox',
-    priority: advancedOpen ? $('fieldPriority').value : 'C',
-    importance: advancedOpen ? $('fieldImportance').value : 'low',
-    urgency: advancedOpen ? $('fieldUrgency').value : 'low',
+    priority: advancedOpen ? $('fieldPriority').value : (quickAnalysis.priority || 'C'),
+    importance: advancedOpen ? $('fieldImportance').value : (quickAnalysis.importance || 'low'),
+    urgency: advancedOpen ? $('fieldUrgency').value : (quickAnalysis.urgency || 'low'),
     dayBucket: advancedOpen ? $('fieldDayBucket').value : 'none',
-    note: advancedOpen ? $('fieldNote').value : ''
+    note: advancedOpen ? $('fieldNote').value : (quickAnalysis.note || '')
   });
   tasks.unshift(t);
   $('quickTitle').value = '';
@@ -346,6 +413,9 @@ function quickLogProject(projectIdOrName, comment='') {
 function hardResetDeleted() {
   projects = projects.filter(p => !p.deletedAt);
   projectMembers = projectMembers.filter(m => !m.deletedAt);
+  promises = promises.filter(p => !p.deletedAt);
+  decisions = decisions.filter(d => !d.deletedAt);
+  taskTemplates = taskTemplates.filter(t => !t.deletedAt);
   tasks = tasks.filter(t => !t.deletedAt);
   workLogs = workLogs.filter(l => !l.deletedAt);
   persistAll({ renderNow: true, sync: false });
@@ -520,10 +590,11 @@ function projectMetrics(projectId) {
 }
 function projectMiniCard(p, index=0) {
   const m = projectMetrics(p.id);
-  return `<article class="dashboard-card ${projectColorClass(p)}">
+  const h = projectHealth(p.id);
+  return `<article class="dashboard-card ${projectColorClass(p)} health-${h.tone}">
     <div class="project-title-row"><h3><span class="color-dot"></span>${escapeHtml(p.name)}</h3><span class="badge">${projectStatusLabels[p.status] || p.status}</span></div>
     <div class="metric-row"><span><strong>${m.open}</strong> открыто</span><span><strong>${m.overdue}</strong> просрочено</span><span><strong>${m.doneWeek}</strong> сделано за неделю</span><span><strong>${m.hoursMonth}</strong> ч/мес</span></div>
-    <p class="task-note">${escapeHtml(p.stage || p.description || 'Паспорт проекта не заполнен')}</p>
+    <p class="task-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)} · ${escapeHtml(p.nextAction || p.stage || p.description || 'нет следующего действия')}</p>
     <div class="task-actions"><button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Паспорт</button></div>
   </article>`;
 }
@@ -572,9 +643,97 @@ function renderWeeklyReport() {
     <section class="settings-panel card"><h3>Текст отчёта</h3><pre class="sql-box">${escapeHtml(weeklyReportText())}</pre></section>`;
 }
 
+
+function daysSinceIso(iso) {
+  if (!iso) return 999;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / (24*60*60*1000));
+}
+function getStuckTasks() {
+  return activeTasks().filter(t => t.status !== 'done' && (['doing','deferred','delegated'].includes(t.status) || daysSinceIso(t.updatedAt) >= 7));
+}
+function getDelegateCandidates() {
+  return activeTasks().filter(t => t.status !== 'done' && (t.priority === 'D' || (t.importance === 'low' && (t.dueDate || t.urgency === 'high'))));
+}
+function projectLastActivity(projectId) {
+  const dates = [
+    ...activeTasks().filter(t => t.projectId === projectId).map(t => t.updatedAt || t.createdAt),
+    ...activeWorkLogs().filter(l => l.projectId === projectId).map(l => l.updatedAt || l.createdAt),
+    ...activeDecisions(projectId).map(d => d.updatedAt || d.createdAt),
+    ...activePromises(projectId).map(p => p.updatedAt || p.createdAt)
+  ].filter(Boolean).sort().reverse();
+  return dates[0] || '';
+}
+function projectHealth(projectId) {
+  const p = projectById(projectId);
+  const metrics = projectMetrics(projectId);
+  const last = projectLastActivity(projectId);
+  const cold = daysSinceIso(last);
+  const noNext = !(p?.nextAction || '').trim();
+  if (metrics.overdue > 0) return { tone:'red', title:'Красный', text:`${metrics.overdue} просрочено` };
+  if (noNext) return { tone:'orange', title:'Жёлтый', text:'нет следующего действия' };
+  if (metrics.deferred > 0 || metrics.doing > 3 || cold >= 7) return { tone:'yellow', title:'Жёлтый', text: cold >= 7 ? `нет движения ${cold} дн.` : 'есть зависание' };
+  if (cold >= 14) return { tone:'gray', title:'Серый', text:`не трогался ${cold} дн.` };
+  return { tone:'green', title:'Зелёный', text:'в норме' };
+}
+function analyzeQuickTaskText(title) {
+  const s = title.toLowerCase();
+  let projectId = selectedQuickProjectId || '';
+  if (!projectId) {
+    for (const p of activeProjects({ includeArchived:true })) {
+      const code = (p.code || '').toLowerCase();
+      if ((code && s.includes(code)) || s.includes(p.name.toLowerCase())) { projectId = p.id; break; }
+    }
+  }
+  const urgent = /(срочно|сегодня|до конца дня|горит|дедлайн|завтра)/i.test(title);
+  const delegate = /(делег|поруч|пусть|передать|запросить)/i.test(title);
+  const tomorrow = /(завтра)/i.test(title);
+  return {
+    projectId,
+    priority: urgent ? 'A' : delegate ? 'D' : 'C',
+    importance: urgent ? 'high' : 'low',
+    urgency: urgent ? 'high' : 'low',
+    planDate: tomorrow ? addDays(1) : '',
+    note: projectId ? 'Проект определён быстрым тегом / текстом задачи.' : ''
+  };
+}
+function todayOverloadNotice(list) {
+  if (list.length <= 9) return '';
+  return `<div class="notice">На сегодня ${list.length} задач. Это перегруз. Лучше оставить 1 главную, 3 важные и до 5 мелких, остальное перенести.</div>`;
+}
+function renderCommander() {
+  const todays = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
+  const overdue = activeTasks().filter(isOverdue);
+  const stuck = getStuckTasks();
+  const delegate = getDelegateCandidates();
+  const noProject = activeTasks().filter(t => t.status !== 'done' && !t.projectId);
+  const coldProjects = activeProjects().filter(p => daysSinceIso(projectLastActivity(p.id)) >= 7);
+  return `<section class="section-head"><div><h2>Командный экран дня</h2><p>Короткая управленческая выжимка: что делать, где пожар, что зависло и что можно делегировать.</p></div></section>
+  <div class="dashboard-hero card"><div><strong>${todays.length}</strong><span>сегодня</span></div><div><strong>${overdue.length}</strong><span>просрочено</span></div><div><strong>${stuck.length}</strong><span>зависло</span></div><div><strong>${delegate.length}</strong><span>делегировать</span></div></div>
+  ${todayOverloadNotice(todays)}
+  <div class="grid-2">
+    <section class="column"><h3>Сегодня важно</h3>${listHtml(todays.slice(0,9), 'На сегодня задач нет')}</section>
+    <section class="column"><h3>Просрочено</h3>${listHtml(overdue, 'Просрочки нет')}</section>
+    <section class="column"><h3>Зависло</h3>${listHtml(stuck, 'Зависших задач нет')}</section>
+    <section class="column"><h3>Без проекта</h3>${listHtml(noProject, 'Все задачи привязаны к проектам')}</section>
+    <section class="column"><h3>Что делегировать</h3>${listHtml(delegate, 'Кандидатов на делегирование нет')}</section>
+    <section class="column"><h3>Давно не трогал</h3>${coldProjects.length ? coldProjects.map(p => `<div class="summary-card ${projectColorClass(p)}"><h4><span class="color-dot"></span>${escapeHtml(p.name)}</h4><p>${projectHealth(p.id).text}</p><div class="task-actions"><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Открыть проект</button></div></div>`).join('') : '<div class="empty">Нет холодных проектов</div>'}</section>
+  </div>`;
+}
+function renderStuckTasks() {
+  return `<section class="section-head"><div><h2>Зависшие задачи</h2><p>Задачи в работе, отложенные, делегированные или давно не обновлявшиеся.</p></div></section>${listHtml(getStuckTasks(), 'Зависших задач нет')}`;
+}
+function renderDelegateMode() {
+  return `<section class="section-head"><div><h2>Что делегировать</h2><p>Кандидаты: приоритет D или низкая значимость при наличии дедлайна.</p></div></section>${listHtml(getDelegateCandidates(), 'Кандидатов на делегирование нет')}`;
+}
+function renderNoProject() {
+  const list = activeTasks().filter(t => t.status !== 'done' && !t.projectId);
+  return `<section class="section-head"><div><h2>Без проекта</h2><p>Задачи без проекта — это зона потери контроля. Разбери и привяжи к проектам.</p></div></section>${listHtml(list, 'Задач без проекта нет')}`;
+}
+
 function renderKanban() {
   const list = visibleTasks().filter(t => t.status !== 'done');
   const statuses = ['inbox','planned','doing','delegated','deferred'];
+  const mode = settings.kanbanMode || 'compact';
   const renderColumn = (s) => {
     const items = sortTasks(list.filter(t => t.status === s));
     const groups = new Map();
@@ -585,6 +744,12 @@ function renderKanban() {
     }
     const body = [...groups.entries()].map(([pid, tasks]) => {
       const pName = pid === 'no-project' ? 'Без проекта' : projectName(pid);
+      if (mode === 'detailed') {
+        return `<div class="kanban-project">
+          <button class="kanban-project-title" data-action="filterProject" data-project-id="${escapeHtml(pid === 'no-project' ? 'all' : pid)}" type="button">${escapeHtml(pName)} <span>${tasks.length}</span></button>
+          <div class="task-list">${tasks.map(taskCard).join('')}</div>
+        </div>`;
+      }
       return `<div class="kanban-project">
         <button class="kanban-project-title" data-action="filterProject" data-project-id="${escapeHtml(pid === 'no-project' ? 'all' : pid)}" type="button">${escapeHtml(pName)} <span>${tasks.length}</span></button>
         <div class="kanban-task-list">${tasks.map(t => `<button class="kanban-task-link ${isOverdue(t) ? 'overdue-link' : ''}" data-action="edit" data-id="${t.id}" type="button"><strong>${priorityLabels[t.priority]}</strong> ${escapeHtml(t.title)}${t.dueDate ? `<em>${dateLabel(t.dueDate)}</em>` : ''}</button>`).join('')}</div>
@@ -592,7 +757,7 @@ function renderKanban() {
     }).join('');
     return `<section class="column kanban-column"><h3>${statusLabels[s]}</h3><p class="column-sub">${items.length} задач · ${groups.size} проектов</p>${body || '<div class="empty">Пусто</div>'}</section>`;
   };
-  return `<section class="section-head"><div><h2>Канбан</h2><p>Компактно: статус → проект → задачи-ссылки. Нажми на задачу, чтобы открыть карточку.</p></div></section><div class="kanban-grid">${statuses.map(renderColumn).join('')}</div>`;
+  return `<section class="section-head"><div><h2>Канбан</h2><p>${mode === 'compact' ? 'Компактно: статус → проект → задачи-ссылки.' : 'Подробно: полные карточки задач по статусам и проектам.'}</p></div><div class="task-actions"><button class="ghost ${mode === 'compact' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="compact" type="button">Компактно</button><button class="ghost ${mode === 'detailed' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="detailed" type="button">Подробно</button></div></section><div class="kanban-grid kanban-${mode}">${statuses.map(renderColumn).join('')}</div>`;
 }
 
 function renderProjectMembers(projectId) {
@@ -617,6 +782,7 @@ function renderProjectPassport(p) {
       <label>Дата старта<input id="projectStart_${p.id}" type="date" value="${escapeHtml(p.startDate || '')}" /></label>
       <label>Контрольный срок<input id="projectDue_${p.id}" type="date" value="${escapeHtml(p.dueDate || '')}" /></label>
       <label>Ожидаемый результат<input id="projectResult_${p.id}" value="${escapeHtml(p.result || '')}" /></label>
+      <label>Следующее действие<input id="projectNext_${p.id}" value="${escapeHtml(p.nextAction || '')}" placeholder="один конкретный следующий шаг" /></label>
     </div>
     <label class="full-label">Описание<textarea id="projectDescription_${p.id}" rows="2">${escapeHtml(p.description || '')}</textarea></label>
     <label class="full-label">Риски / комментарий<textarea id="projectNote_${p.id}" rows="2">${escapeHtml(p.note || '')}</textarea></label>
@@ -807,9 +973,104 @@ function renderAbout() {
       <div class="summary-card"><h4>5. Табель</h4><p>Отмечай часы по проектам. Табель можно вывести по всем проектам или по конкретному проекту.</p></div>
       <div class="summary-card"><h4>6. Синхронизация</h4><p>После входа через Supabase данные синхронизируются автоматически и вручную кнопкой «Синхронизировать».</p></div>
     </div>
-    <div class="notice">Резервная копия: вкладка «Синхронизация» → «Резервная копия всех данных». В версии 1.6 также есть дашборд 12 проектов, паспорта проектов, роли участников, недельный отчёт и автоархив выполненных задач.</div>
+    <div class="notice">Резервная копия: вкладка «Синхронизация» → «Резервная копия всех данных». В версии 1.6 также есть дашборд проектов, паспорта проектов, роли участников, недельный отчёт и автоархив выполненных задач.</div>
   </section>`;
 }
+
+function renderPromises() {
+  const open = activePromises().filter(p => p.status !== 'done');
+  return `<section class="section-head"><div><h2>Контроль обещаний</h2><p>Что ты обещал и что обещали тебе. Это отдельный контрольный контур.</p></div></section>
+  <section class="card project-form-card"><h3>Добавить обещание</h3><div class="project-form-grid">
+    <label>Проект<input id="promiseProject" list="projectList" placeholder="Проект" /></label>
+    <label>Кто<input id="promiseWho" placeholder="ФИО / организация" /></label>
+    <label>Направление<select id="promiseDirection"><option value="to_me">Мне обещали</option><option value="me_to">Я обещал</option></select></label>
+    <label>Дата проверки<input id="promiseCheck" type="date" /></label>
+  </div><label class="full-label">Что обещано<textarea id="promiseText" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addPromiseBtn" type="button">Добавить</button></div></section>
+  <div class="task-list">${open.map(p => `<article class="task-card"><p class="task-title">${escapeHtml(p.text)}</p><div class="task-meta"><span class="badge">${escapeHtml(projectName(p.projectId))}</span><span class="badge">${p.direction === 'me_to' ? 'я обещал' : 'мне обещали'}</span>${p.checkDate ? `<span class="badge ${p.checkDate < today() ? 'overdue' : ''}">проверить: ${dateLabel(p.checkDate)}</span>` : ''}</div><p class="task-note">${escapeHtml(p.who || '')}</p><div class="task-actions"><button class="mini-btn" data-action="donePromise" data-id="${p.id}" type="button">Выполнено</button></div></article>`).join('') || '<div class="empty">Открытых обещаний нет</div>'}</div>`;
+}
+function addPromiseFromForm() {
+  const text = $('promiseText')?.value.trim();
+  if (!text) return alert('Заполни обещание.');
+  const projectId = projectValueFromInput($('promiseProject')?.value || '');
+  promises.unshift(normalizePromise({ projectId, text, who: $('promiseWho')?.value.trim() || '', direction: $('promiseDirection')?.value || 'to_me', checkDate: $('promiseCheck')?.value || '' }));
+  persistAll({ renderNow: true, sync: true });
+}
+function donePromise(id) {
+  promises = promises.map(p => p.id === id ? normalizePromise({ ...p, status:'done', updatedAt: nowISO() }) : p);
+  persistAll({ renderNow: true, sync: true });
+}
+function renderDecisions() {
+  const list = activeDecisions();
+  return `<section class="section-head"><div><h2>Журнал решений</h2><p>Фиксация решений по проектам: дата, суть, влияние и следующее действие.</p></div></section>
+  <section class="card project-form-card"><h3>Добавить решение</h3><div class="project-form-grid">
+    <label>Проект<input id="decisionProject" list="projectList" placeholder="Проект" /></label>
+    <label>Дата<input id="decisionDate" type="date" value="${today()}" /></label>
+    <label>Кто принял / владелец<input id="decisionOwner" placeholder="ФИО / орган / команда" /></label>
+    <label>Заголовок<input id="decisionTitle" placeholder="Коротко" /></label>
+  </div><label class="full-label">Решение<textarea id="decisionText" rows="2"></textarea></label><label class="full-label">Что меняет / следующее действие<textarea id="decisionImpact" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addDecisionBtn" type="button">Добавить решение</button></div></section>
+  <div class="task-list">${list.map(d => `<article class="task-card"><p class="task-title">${escapeHtml(d.title)}</p><div class="task-meta"><span class="badge">${escapeHtml(projectName(d.projectId))}</span><span class="badge">${dateLabel(d.date)}</span></div><p class="task-note">${escapeHtml(d.text)}${d.impact ? '\\n' + escapeHtml(d.impact) : ''}</p></article>`).join('') || '<div class="empty">Решений пока нет</div>'}</div>`;
+}
+function addDecisionFromForm() {
+  const title = $('decisionTitle')?.value.trim() || 'Решение';
+  const text = $('decisionText')?.value.trim();
+  if (!text) return alert('Заполни текст решения.');
+  const projectId = projectValueFromInput($('decisionProject')?.value || '');
+  decisions.unshift(normalizeDecision({ projectId, title, text, date: $('decisionDate')?.value || today(), owner: $('decisionOwner')?.value.trim() || '', impact: $('decisionImpact')?.value.trim() || '' }));
+  persistAll({ renderNow: true, sync: true });
+}
+function renderTemplates() {
+  const list = activeTaskTemplates();
+  return `<section class="section-head"><div><h2>Шаблоны задач</h2><p>Быстро создавай типовые задачи: АПР, МТЗ, письмо, протокол, проверка ТХ.</p></div></section>
+  <section class="card project-form-card"><h3>Создать шаблон</h3><div class="project-form-grid">
+    <label>Название шаблона<input id="templateName" placeholder="Проверить АПР" /></label>
+    <label>Заголовок задачи<input id="templateTitle" placeholder="Проверить АПР по объекту..." /></label>
+    <label>Проект<input id="templateProject" list="projectList" placeholder="опционально" /></label>
+    <label>Приоритет<select id="templatePriority"><option>A</option><option>B</option><option selected>C</option><option>D</option><option>E</option></select></label>
+  </div><label class="full-label">Комментарий<textarea id="templateNote" rows="2" placeholder="чек-лист, что проверить"></textarea></label><div class="task-actions"><button class="primary" id="addTemplateBtn" type="button">Сохранить шаблон</button></div></section>
+  <div class="grid-2">${list.map(t => `<section class="column"><h3>${escapeHtml(t.name)}</h3><p class="task-note">${escapeHtml(t.title || t.note || '')}</p><div class="task-actions"><button class="mini-btn" data-action="useTemplate" data-id="${t.id}" type="button">Создать задачу</button><button class="mini-btn" data-action="deleteTemplate" data-id="${t.id}" type="button">Удалить</button></div></section>`).join('') || '<div class="empty">Шаблонов пока нет</div>'}</div>`;
+}
+function addTemplateFromForm() {
+  const name = $('templateName')?.value.trim();
+  if (!name) return alert('Укажи название шаблона.');
+  const projectId = projectValueFromInput($('templateProject')?.value || '');
+  taskTemplates.unshift(normalizeTaskTemplate({ name, title: $('templateTitle')?.value.trim() || name, projectId, priority: $('templatePriority')?.value || 'C', note: $('templateNote')?.value.trim() || '' }));
+  persistAll({ renderNow: true, sync: true });
+}
+function useTemplate(id) {
+  const t = taskTemplates.find(x => x.id === id);
+  if (!t) return;
+  tasks.unshift(normalizeTask({ title: t.title || t.name, projectId: t.projectId, project: projectName(t.projectId), status: t.status, priority: t.priority, importance: t.importance, urgency: t.urgency, dayBucket: t.dayBucket, note: t.note }));
+  currentView = 'inbox';
+  saveTasks();
+}
+function deleteTemplate(id) {
+  taskTemplates = taskTemplates.map(t => t.id === id ? normalizeTaskTemplate({ ...t, deletedAt: nowISO(), updatedAt: nowISO() }) : t);
+  persistAll({ renderNow: true, sync: true });
+}
+function renderGlobalSearch() {
+  const q = ($('searchInput')?.value || '').trim().toLowerCase();
+  const match = (arr) => !q ? [] : arr.filter(x => JSON.stringify(x).toLowerCase().includes(q));
+  const rt = match(activeTasks());
+  const rp = match(activeProjects({ includeArchived:true }));
+  const rm = match(activeProjectMembers());
+  const rd = match(activeDecisions());
+  const rpr = match(activePromises());
+  return `<section class="section-head"><div><h2>Поиск по всему</h2><p>Ищет по задачам, проектам, участникам, решениям и обещаниям. Введи запрос в поле поиска сверху.</p></div></section>
+  ${!q ? '<div class="empty">Введите запрос в поле поиска</div>' : `<div class="grid-2"><section class="column"><h3>Задачи</h3>${listHtml(rt, 'Нет совпадений')}</section><section class="column"><h3>Проекты</h3>${rp.map(p => projectMiniCard(p)).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Участники</h3>${rm.map(m => `<div class="summary-card"><h4>${escapeHtml(m.name)}</h4><p>${escapeHtml(m.role)} · ${escapeHtml(projectName(m.projectId))}</p></div>`).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Решения / обещания</h3>${[...rd.map(d => `<div class="summary-card"><h4>${escapeHtml(d.title)}</h4><p>${escapeHtml(projectName(d.projectId))}</p></div>`), ...rpr.map(p => `<div class="summary-card"><h4>${escapeHtml(p.text)}</h4><p>${escapeHtml(p.who)} · ${escapeHtml(projectName(p.projectId))}</p></div>`)].join('') || '<div class="empty">Нет совпадений</div>'}</section></div>`}`;
+}
+function renderEveningReview() {
+  const done = activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === today());
+  const unfinished = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
+  const logs = activeWorkLogs().filter(l => l.date === today());
+  return `<section class="section-head"><div><h2>Вечерний разбор</h2><p>Что закрыто, что перенести и над чем реально работал по табелю.</p></div><div class="task-actions"><button class="ghost" id="moveUnfinishedTomorrow" type="button">Перенести незакрытое на завтра</button></div></section>
+  <div class="grid-2"><section class="column"><h3>Закрыто сегодня</h3>${listHtml(done, 'Сегодня закрытых задач нет')}</section><section class="column"><h3>Перенести / решить</h3>${listHtml(unfinished, 'На сегодня незакрытых задач нет')}</section><section class="column"><h3>Табель сегодня</h3>${logs.map(l => `<div class="summary-card"><h4>${escapeHtml(projectName(l.projectId,l.project))}</h4><p>${l.hours} ч · ${escapeHtml(l.comment || '')}</p></div>`).join('') || '<div class="empty">Отметок нет</div>'}</section></div>`;
+}
+function moveUnfinishedToTomorrow() {
+  const ids = activeTasks().filter(t => t.status !== 'done' && t.planDate === today()).map(t => t.id);
+  tasks = tasks.map(t => ids.includes(t.id) ? normalizeTask({ ...t, planDate: addDays(1), updatedAt: nowISO() }) : t);
+  persistAll({ renderNow: true, sync: true });
+}
+
 function render() {
   renderProjectOptions();
   renderStats();
@@ -818,6 +1079,15 @@ function render() {
   root.innerHTML = currentView === 'today' || currentView === 'tomorrow' ? renderToday()
     : currentView === 'week' ? renderWeek()
     : currentView === 'dashboard' ? renderDashboard()
+    : currentView === 'commander' ? renderCommander()
+    : currentView === 'stuck' ? renderStuckTasks()
+    : currentView === 'delegate' ? renderDelegateMode()
+    : currentView === 'noproject' ? renderNoProject()
+    : currentView === 'promises' ? renderPromises()
+    : currentView === 'decisions' ? renderDecisions()
+    : currentView === 'templates' ? renderTemplates()
+    : currentView === 'searchall' ? renderGlobalSearch()
+    : currentView === 'evening' ? renderEveningReview()
     : currentView === 'report' ? renderWeeklyReport()
     : currentView === 'inbox' ? renderInbox()
     : currentView === 'matrix' ? renderMatrix()
@@ -871,6 +1141,10 @@ function bindDynamicActions() {
     const id = btn.dataset.id;
     const action = btn.dataset.action;
     if (action === 'clearQuickProject') { selectedQuickProjectId = ''; renderQuickTagBars(); }
+    if (action === 'setKanbanMode') { settings.kanbanMode = btn.dataset.mode || 'compact'; saveSettings({ renderNow:false }); render(); }
+    if (action === 'donePromise') donePromise(id);
+    if (action === 'useTemplate') useTemplate(id);
+    if (action === 'deleteTemplate') deleteTemplate(id);
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
@@ -895,6 +1169,10 @@ function bindDynamicActions() {
     applyQuickProject(btn.dataset.quickProject || '', target);
   });
   if ($('createProjectBtn')) $('createProjectBtn').onclick = createProjectFromForm;
+  if ($('addPromiseBtn')) $('addPromiseBtn').onclick = addPromiseFromForm;
+  if ($('addDecisionBtn')) $('addDecisionBtn').onclick = addDecisionFromForm;
+  if ($('addTemplateBtn')) $('addTemplateBtn').onclick = addTemplateFromForm;
+  if ($('moveUnfinishedTomorrow')) $('moveUnfinishedTomorrow').onclick = moveUnfinishedToTomorrow;
   if ($('addQuickTagBtn')) $('addQuickTagBtn').onclick = createQuickTagFromInput;
   if ($('quickTagName')) $('quickTagName').addEventListener('keydown', e => { if (e.key === 'Enter') createQuickTagFromInput(); });
   if ($('addWorkLog')) $('addWorkLog').onclick = () => addWorkLog({ date: $('workDate').value, project: $('workProject').value, hours: $('workHours').value, mark: $('workMark').value, comment: $('workComment').value });
@@ -933,7 +1211,7 @@ function downloadText(filename, text, type='text/plain;charset=utf-8') { const b
 function exportBackup(reason='backup') {
   settings.lastBackupAt = nowISO();
   persistAll({ renderNow: false, sync: false });
-  const data = { kind: 'kvadrat-zadach-backup', reason, version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, tasks, workLogs, settings };
+  const data = { kind: 'kvadrat-zadach-backup', reason, version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, promises, decisions, taskTemplates, tasks, workLogs, settings };
   downloadText(`kvadrat-zadach-${reason}-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
 }
 async function importJson(e) {
@@ -941,17 +1219,26 @@ async function importJson(e) {
   const parsed = JSON.parse(await file.text());
   const incomingProjects = parsed.projects || [];
   const incomingMembers = parsed.projectMembers || parsed.members || [];
+  const incomingPromises = parsed.promises || [];
+  const incomingDecisions = parsed.decisions || [];
+  const incomingTemplates = parsed.taskTemplates || parsed.templates || [];
   const incomingTasks = Array.isArray(parsed) ? parsed : (parsed.tasks || []);
   const incomingLogs = parsed.workLogs || [];
   if (!Array.isArray(incomingTasks)) return alert('Не нашёл массив задач в файле.');
   mergeProjects(incomingProjects.map(normalizeProject));
   if (Array.isArray(incomingMembers)) mergeProjectMembers(incomingMembers.map(normalizeProjectMember));
+  if (Array.isArray(incomingPromises)) mergePromises(incomingPromises.map(normalizePromise));
+  if (Array.isArray(incomingDecisions)) mergeDecisions(incomingDecisions.map(normalizeDecision));
+  if (Array.isArray(incomingTemplates)) mergeTaskTemplates(incomingTemplates.map(normalizeTaskTemplate));
   mergeTasks(incomingTasks.map(normalizeTask));
   mergeWorkLogs(incomingLogs.map(normalizeWorkLog));
   persistAll({ renderNow: true, sync: true });
 }
 function mergeProjects(incoming) { const byId = new Map(projects.map(p => [p.id, p])); for (const p of incoming) { const old = byId.get(p.id); if (!old || new Date(p.updatedAt) >= new Date(old.updatedAt)) byId.set(p.id, normalizeProject(p)); } projects = [...byId.values()]; }
 function mergeProjectMembers(incoming) { const byId = new Map(projectMembers.map(m => [m.id, m])); for (const m of incoming) { const old = byId.get(m.id); if (!old || new Date(m.updatedAt) >= new Date(old.updatedAt)) byId.set(m.id, normalizeProjectMember(m)); } projectMembers = [...byId.values()]; }
+function mergePromises(incoming) { const byId = new Map(promises.map(p => [p.id, p])); for (const p of incoming) { const old = byId.get(p.id); if (!old || new Date(p.updatedAt) >= new Date(old.updatedAt)) byId.set(p.id, normalizePromise(p)); } promises = [...byId.values()]; }
+function mergeDecisions(incoming) { const byId = new Map(decisions.map(d => [d.id, d])); for (const d of incoming) { const old = byId.get(d.id); if (!old || new Date(d.updatedAt) >= new Date(old.updatedAt)) byId.set(d.id, normalizeDecision(d)); } decisions = [...byId.values()]; }
+function mergeTaskTemplates(incoming) { const byId = new Map(taskTemplates.map(t => [t.id, t])); for (const t of incoming) { const old = byId.get(t.id); if (!old || new Date(t.updatedAt) >= new Date(old.updatedAt)) byId.set(t.id, normalizeTaskTemplate(t)); } taskTemplates = [...byId.values()]; }
 function mergeTasks(incoming) { const byId = new Map(tasks.map(t => [t.id, t])); for (const t of incoming) { const old = byId.get(t.id); if (!old || new Date(t.updatedAt) >= new Date(old.updatedAt)) byId.set(t.id, normalizeTask(t)); } tasks = [...byId.values()]; }
 function mergeWorkLogs(incoming) { const byId = new Map(workLogs.map(l => [l.id, l])); for (const l of incoming) { const old = byId.get(l.id); if (!old || new Date(l.updatedAt) >= new Date(old.updatedAt)) byId.set(l.id, normalizeWorkLog(l)); } workLogs = [...byId.values()]; }
 function csvEscape(s) { const v = String(s ?? ''); return /[";\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
@@ -996,10 +1283,16 @@ async function sendMagicLink() {
   if (error) return alert(error.message);
   alert('Ссылка входа отправлена на email. Открой её на этом устройстве.');
 }
-function projectToRow(p, userId) { return { id: p.id, user_id: userId, name: p.name, code: p.code || null, status: p.status || 'active', owner: p.owner || null, customer: p.customer || null, stage: p.stage || null, start_date: p.startDate || null, due_date: p.dueDate || null, result: p.result || null, description: p.description || null, note: p.note || null, color: p.color || null, created_at: p.createdAt, updated_at: p.updatedAt, deleted_at: p.deletedAt }; }
-function rowToProject(r) { return normalizeProject({ id: r.id, name: r.name, code: r.code || '', status: r.status || 'active', owner: r.owner || '', customer: r.customer || '', stage: r.stage || '', startDate: r.start_date || '', dueDate: r.due_date || '', result: r.result || '', description: r.description || '', note: r.note || '', color: r.color || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
+function projectToRow(p, userId) { return { id: p.id, user_id: userId, name: p.name, code: p.code || null, status: p.status || 'active', owner: p.owner || null, customer: p.customer || null, stage: p.stage || null, start_date: p.startDate || null, due_date: p.dueDate || null, result: p.result || null, next_action: p.nextAction || null, description: p.description || null, note: p.note || null, color: p.color || null, created_at: p.createdAt, updated_at: p.updatedAt, deleted_at: p.deletedAt }; }
+function rowToProject(r) { return normalizeProject({ id: r.id, name: r.name, code: r.code || '', status: r.status || 'active', owner: r.owner || '', customer: r.customer || '', stage: r.stage || '', startDate: r.start_date || '', dueDate: r.due_date || '', result: r.result || '', nextAction: r.next_action || '', description: r.description || '', note: r.note || '', color: r.color || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
 function projectMemberToRow(m, userId) { return { id: m.id, user_id: userId, project_id: m.projectId || null, name: m.name, role: m.role || 'Участник', email: m.email || null, note: m.note || null, created_at: m.createdAt, updated_at: m.updatedAt, deleted_at: m.deletedAt }; }
 function rowToProjectMember(r) { return normalizeProjectMember({ id: r.id, projectId: r.project_id || '', name: r.name, role: r.role || 'Участник', email: r.email || '', note: r.note || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
+function promiseToRow(p, userId) { const n = normalizePromise(p); return { id:n.id, user_id:userId, project_id:n.projectId || null, direction:n.direction, who:n.who || null, text:n.text, promised_date:n.promisedDate || null, check_date:n.checkDate || null, status:n.status || 'open', note:n.note || null, created_at:n.createdAt, updated_at:n.updatedAt, deleted_at:n.deletedAt }; }
+function rowToPromise(r) { return normalizePromise({ id:r.id, projectId:r.project_id || '', direction:r.direction, who:r.who || '', text:r.text || '', promisedDate:r.promised_date || '', checkDate:r.check_date || '', status:r.status || 'open', note:r.note || '', createdAt:r.created_at, updatedAt:r.updated_at, deletedAt:r.deleted_at }); }
+function decisionToRow(d, userId) { const n = normalizeDecision(d); return { id:n.id, user_id:userId, project_id:n.projectId || null, decision_date:n.date || null, title:n.title, text:n.text || null, owner:n.owner || null, impact:n.impact || null, next_action:n.nextAction || null, created_at:n.createdAt, updated_at:n.updatedAt, deleted_at:n.deletedAt }; }
+function rowToDecision(r) { return normalizeDecision({ id:r.id, projectId:r.project_id || '', date:r.decision_date || '', title:r.title, text:r.text || '', owner:r.owner || '', impact:r.impact || '', nextAction:r.next_action || '', createdAt:r.created_at, updatedAt:r.updated_at, deletedAt:r.deleted_at }); }
+function taskTemplateToRow(t, userId) { const n = normalizeTaskTemplate(t); return { id:n.id, user_id:userId, name:n.name, title:n.title || null, project_id:n.projectId || null, status:n.status, priority:n.priority, importance:n.importance, urgency:n.urgency, day_bucket:n.dayBucket, note:n.note || null, created_at:n.createdAt, updated_at:n.updatedAt, deleted_at:n.deletedAt }; }
+function rowToTaskTemplate(r) { return normalizeTaskTemplate({ id:r.id, name:r.name, title:r.title || '', projectId:r.project_id || '', status:r.status, priority:r.priority, importance:r.importance, urgency:r.urgency, dayBucket:r.day_bucket, note:r.note || '', createdAt:r.created_at, updatedAt:r.updated_at, deletedAt:r.deleted_at }); }
 function taskToRow(t, userId) { const n = normalizeTask(t); return { id: n.id, user_id: userId, title: n.title, project_id: n.projectId || null, project: projectName(n.projectId, n.project) === 'Без проекта' ? null : projectName(n.projectId, n.project), due_date: n.dueDate || null, plan_date: n.planDate || null, status: n.status, priority: n.priority, importance: n.importance, urgency: n.urgency, note: n.note || null, day_bucket: n.dayBucket || 'none', order_index: n.orderIndex || 0, created_at: n.createdAt, updated_at: n.updatedAt, done_at: n.doneAt, archived_at: n.archivedAt, deleted_at: n.deletedAt }; }
 function rowToTask(r) { return normalizeTask({ id: r.id, title: r.title, projectId: r.project_id || '', project: r.project || '', dueDate: r.due_date || '', planDate: r.plan_date || '', status: r.status, priority: r.priority, importance: r.importance, urgency: r.urgency, note: r.note || '', dayBucket: r.day_bucket || 'none', orderIndex: r.order_index || 0, createdAt: r.created_at, updatedAt: r.updated_at, doneAt: r.done_at, archivedAt: r.archived_at, deletedAt: r.deleted_at }); }
 function workLogToRow(l, userId) { const n = normalizeWorkLog(l); return { id: n.id, user_id: userId, work_date: n.date, project_id: n.projectId || null, project: projectName(n.projectId, n.project), hours: n.hours, mark: n.mark, comment: n.comment || null, created_at: n.createdAt, updated_at: n.updatedAt, deleted_at: n.deletedAt }; }
@@ -1016,16 +1309,28 @@ async function performSync({ silent = false } = {}) {
     if (localProjects.length) { const { error } = await client.from('projects').upsert(localProjects, { onConflict: 'id' }); if (error) throw error; }
     const localMembers = projectMembers.map(m => projectMemberToRow(normalizeProjectMember(m), user.id));
     if (localMembers.length) { const { error } = await client.from('project_members').upsert(localMembers, { onConflict: 'id' }); if (error) throw error; }
+    const localPromises = promises.map(p => promiseToRow(normalizePromise(p), user.id));
+    if (localPromises.length) { const { error } = await client.from('promises').upsert(localPromises, { onConflict: 'id' }); if (error) throw error; }
+    const localDecisions = decisions.map(d => decisionToRow(normalizeDecision(d), user.id));
+    if (localDecisions.length) { const { error } = await client.from('decisions').upsert(localDecisions, { onConflict: 'id' }); if (error) throw error; }
+    const localTemplates = taskTemplates.map(t => taskTemplateToRow(normalizeTaskTemplate(t), user.id));
+    if (localTemplates.length) { const { error } = await client.from('task_templates').upsert(localTemplates, { onConflict: 'id' }); if (error) throw error; }
     const localTasks = tasks.map(t => taskToRow(normalizeTask(t), user.id));
     if (localTasks.length) { const { error } = await client.from('tasks').upsert(localTasks, { onConflict: 'id' }); if (error) throw error; }
     const localLogs = workLogs.map(l => workLogToRow(normalizeWorkLog(l), user.id));
     if (localLogs.length) { const { error } = await client.from('work_logs').upsert(localLogs, { onConflict: 'id' }); if (error) throw error; }
     const { data: remoteProjects, error: pErr } = await client.from('projects').select('*').order('updated_at', { ascending: false }); if (pErr) throw pErr;
     const { data: remoteMembers, error: mErr } = await client.from('project_members').select('*').order('updated_at', { ascending: false }); if (mErr) throw mErr;
+    const { data: remotePromises, error: prErr } = await client.from('promises').select('*').order('updated_at', { ascending: false }); if (prErr) throw prErr;
+    const { data: remoteDecisions, error: dErr } = await client.from('decisions').select('*').order('updated_at', { ascending: false }); if (dErr) throw dErr;
+    const { data: remoteTemplates, error: ttErr } = await client.from('task_templates').select('*').order('updated_at', { ascending: false }); if (ttErr) throw ttErr;
     const { data: remoteTasks, error: tErr } = await client.from('tasks').select('*').order('updated_at', { ascending: false }); if (tErr) throw tErr;
     const { data: remoteLogs, error: lErr } = await client.from('work_logs').select('*').order('updated_at', { ascending: false }); if (lErr) throw lErr;
     mergeProjects((remoteProjects || []).map(rowToProject));
     mergeProjectMembers((remoteMembers || []).map(rowToProjectMember));
+    mergePromises((remotePromises || []).map(rowToPromise));
+    mergeDecisions((remoteDecisions || []).map(rowToDecision));
+    mergeTaskTemplates((remoteTemplates || []).map(rowToTaskTemplate));
     mergeTasks((remoteTasks || []).map(rowToTask));
     mergeWorkLogs((remoteLogs || []).map(rowToWorkLog));
     hardResetDeleted();
@@ -1057,6 +1362,7 @@ const SQL_TEMPLATE = `create table if not exists public.projects (
   start_date date,
   due_date date,
   result text,
+  next_action text,
   description text,
   note text,
   color text,
@@ -1070,6 +1376,7 @@ alter table public.projects add column if not exists stage text;
 alter table public.projects add column if not exists start_date date;
 alter table public.projects add column if not exists due_date date;
 alter table public.projects add column if not exists result text;
+alter table public.projects add column if not exists next_action text;
 alter table public.projects add column if not exists color text;
 
 create table if not exists public.tasks (
@@ -1121,6 +1428,54 @@ create table if not exists public.project_members (
   deleted_at timestamptz
 );
 
+create table if not exists public.promises (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  project_id uuid references public.projects(id) on delete set null,
+  direction text not null default 'to_me' check (direction in ('to_me','me_to')),
+  who text,
+  text text not null,
+  promised_date date,
+  check_date date,
+  status text not null default 'open' check (status in ('open','done','cancelled')),
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create table if not exists public.decisions (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  project_id uuid references public.projects(id) on delete set null,
+  decision_date date,
+  title text not null,
+  text text,
+  owner text,
+  impact text,
+  next_action text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create table if not exists public.task_templates (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  name text not null,
+  title text,
+  project_id uuid references public.projects(id) on delete set null,
+  status text not null default 'inbox',
+  priority text not null default 'C',
+  importance text not null default 'low',
+  urgency text not null default 'low',
+  day_bucket text not null default 'none',
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
 -- Migrations for existing installations
 alter table public.tasks add column if not exists project_id uuid references public.projects(id) on delete set null;
 alter table public.tasks add column if not exists archived_at timestamptz;
@@ -1129,6 +1484,9 @@ alter table public.tasks alter column order_index type bigint using order_index:
 
 alter table public.projects enable row level security;
 alter table public.project_members enable row level security;
+alter table public.promises enable row level security;
+alter table public.decisions enable row level security;
+alter table public.task_templates enable row level security;
 alter table public.tasks enable row level security;
 alter table public.work_logs enable row level security;
 
@@ -1140,6 +1498,18 @@ drop policy if exists "Users can select own project members" on public.project_m
 drop policy if exists "Users can insert own project members" on public.project_members;
 drop policy if exists "Users can update own project members" on public.project_members;
 drop policy if exists "Users can delete own project members" on public.project_members;
+drop policy if exists "Users can select own promises" on public.promises;
+drop policy if exists "Users can insert own promises" on public.promises;
+drop policy if exists "Users can update own promises" on public.promises;
+drop policy if exists "Users can delete own promises" on public.promises;
+drop policy if exists "Users can select own decisions" on public.decisions;
+drop policy if exists "Users can insert own decisions" on public.decisions;
+drop policy if exists "Users can update own decisions" on public.decisions;
+drop policy if exists "Users can delete own decisions" on public.decisions;
+drop policy if exists "Users can select own task templates" on public.task_templates;
+drop policy if exists "Users can insert own task templates" on public.task_templates;
+drop policy if exists "Users can update own task templates" on public.task_templates;
+drop policy if exists "Users can delete own task templates" on public.task_templates;
 drop policy if exists "Users can select own tasks" on public.tasks;
 drop policy if exists "Users can insert own tasks" on public.tasks;
 drop policy if exists "Users can update own tasks" on public.tasks;
@@ -1159,6 +1529,21 @@ create policy "Users can insert own project members" on public.project_members f
 create policy "Users can update own project members" on public.project_members for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "Users can delete own project members" on public.project_members for delete to authenticated using ((select auth.uid()) = user_id);
 
+create policy "Users can select own promises" on public.promises for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own promises" on public.promises for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own promises" on public.promises for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own promises" on public.promises for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own decisions" on public.decisions for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own decisions" on public.decisions for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own decisions" on public.decisions for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own decisions" on public.decisions for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own task templates" on public.task_templates for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own task templates" on public.task_templates for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own task templates" on public.task_templates for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own task templates" on public.task_templates for delete to authenticated using ((select auth.uid()) = user_id);
+
 create policy "Users can select own tasks" on public.tasks for select to authenticated using ((select auth.uid()) = user_id);
 create policy "Users can insert own tasks" on public.tasks for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "Users can update own tasks" on public.tasks for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
@@ -1174,6 +1559,9 @@ NOTIFY pgrst, 'reload schema';
 function migrateLocalData() {
   projects = projects.map(normalizeProject);
   projectMembers = projectMembers.map(normalizeProjectMember);
+  promises = promises.map(normalizePromise);
+  decisions = decisions.map(normalizeDecision);
+  taskTemplates = taskTemplates.map(normalizeTaskTemplate);
   favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
   [...tasks, ...workLogs].forEach(x => { if (x.project) ensureProject(x.project, { persist: false }); });
   tasks = tasks.map(normalizeTask);
