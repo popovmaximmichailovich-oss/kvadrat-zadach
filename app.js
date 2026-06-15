@@ -1,4 +1,5 @@
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.1.2';
+console.log('Квадрат задач version', APP_VERSION);
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -935,7 +936,7 @@ function renderTimesheet() {
 }
 function renderSettings() {
   return `<section class="settings-panel card">
-    <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает локально и синхронизируется через твой Supabase-проект.</p></div>
+    <div><h2>Синхронизация, профиль и резервные копии</h2><p>Версия 2.1.2. Приложение работает локально и синхронизируется через твой Supabase-проект.</p></div>
     <div class="notice">Статус: ${escapeHtml(syncState.text)}. Автосинхронизация запускается после изменений и при открытии приложения.</div>
     <div class="sync-diagnostics">
       <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
@@ -962,7 +963,12 @@ function renderSettings() {
     </div>
     <div class="settings-grid">
       <label>Email для входа <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" /></label>
-      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost" id="signOut" type="button">Выйти</button></div>
+      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost sync-test-btn" id="checkCloud" type="button">Проверить облако</button><button class="ghost sync-test-btn" id="pullCloud" type="button">Загрузить из облака</button><button class="ghost sync-test-btn" id="pushCloud" type="button">Выгрузить в облако</button><button class="ghost" id="signOut" type="button">Выйти</button></div>
+    </div>
+    <div class="sync-repair-panel">
+      <h3>Диагностика обмена между устройствами</h3>
+      <p>Если задачи есть в Supabase, но не появляются на другом устройстве: сначала нажми «Проверить облако», затем «Загрузить из облака».</p>
+      <div class="task-actions"><button class="primary" id="checkCloud2" type="button">Проверить облако</button><button class="primary" id="pullCloud2" type="button">Загрузить из облака</button><button class="ghost" id="pushCloud2" type="button">Выгрузить в облако</button></div>
     </div>
     <div class="settings-grid">
       <button class="ghost" id="exportBackup" type="button">Резервная копия всех данных</button>
@@ -1213,6 +1219,9 @@ function bindDynamicActions() {
   if ($('checkCloud')) $('checkCloud').onclick = checkCloudConnection;
   if ($('pullCloud')) $('pullCloud').onclick = pullFromCloud;
   if ($('pushCloud')) $('pushCloud').onclick = pushToCloud;
+  if ($('checkCloud2')) $('checkCloud2').onclick = checkCloudConnection;
+  if ($('pullCloud2')) $('pullCloud2').onclick = pullFromCloud;
+  if ($('pushCloud2')) $('pushCloud2').onclick = pushToCloud;
   if ($('signOut')) $('signOut').onclick = signOut;
   if ($('copyWeeklyReport')) $('copyWeeklyReport').onclick = async () => { await navigator.clipboard.writeText(weeklyReportText()); alert('Отчёт скопирован.'); };
   if ($('downloadWeeklyReport')) $('downloadWeeklyReport').onclick = () => downloadText(`weekly-report-${today()}.txt`, weeklyReportText(), 'text/plain;charset=utf-8');
