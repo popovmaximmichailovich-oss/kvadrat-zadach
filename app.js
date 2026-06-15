@@ -1,4 +1,4 @@
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -30,6 +30,7 @@ let autoSyncTimer = null;
 let syncInProgress = false;
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
+let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, lastError: '', lastCheckedAt: '' };
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -936,6 +937,14 @@ function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает локально и синхронизируется через твой Supabase-проект.</p></div>
     <div class="notice">Статус: ${escapeHtml(syncState.text)}. Автосинхронизация запускается после изменений и при открытии приложения.</div>
+    <div class="sync-diagnostics">
+      <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
+      <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div>
+      <div><strong>локально задач:</strong> ${activeTasks().length}</div>
+      <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
+      <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
+      ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
+    </div>
     <div class="settings-grid">
       <label>Фамилия, имя, отчество <input id="profileFio" value="${escapeHtml(settings.fio || '')}" /></label>
       <label>Должность <input id="profilePosition" value="${escapeHtml(settings.position || '')}" /></label>
@@ -948,7 +957,7 @@ function renderSettings() {
       <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button></div>
     </div>
     <div class="settings-grid">
-      <label>Supabase Project URL <input id="syncUrl" value="${escapeHtml(settings.supabaseUrl || '')}" placeholder="https://xxxx.supabase.co" /></label>
+      <label>Supabase Project URL <input id="syncUrl" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || ''))}" placeholder="https://xxxx.supabase.co" /></label>
       <label>Supabase publishable key <input id="syncKey" value="${escapeHtml(settings.supabaseAnonKey || '')}" placeholder="sb_publishable_..." /></label>
     </div>
     <div class="settings-grid">
@@ -1198,9 +1207,12 @@ function bindDynamicActions() {
     persistAll({ renderNow: true, sync: false });
     alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
-  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = $('syncUrl').value.trim(); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
+  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim()); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
   if ($('syncNow')) $('syncNow').onclick = () => performSync({ silent: false });
+  if ($('checkCloud')) $('checkCloud').onclick = checkCloudConnection;
+  if ($('pullCloud')) $('pullCloud').onclick = pullFromCloud;
+  if ($('pushCloud')) $('pushCloud').onclick = pushToCloud;
   if ($('signOut')) $('signOut').onclick = signOut;
   if ($('copyWeeklyReport')) $('copyWeeklyReport').onclick = async () => { await navigator.clipboard.writeText(weeklyReportText()); alert('Отчёт скопирован.'); };
   if ($('downloadWeeklyReport')) $('downloadWeeklyReport').onclick = () => downloadText(`weekly-report-${today()}.txt`, weeklyReportText(), 'text/plain;charset=utf-8');
@@ -1269,7 +1281,87 @@ function exportTimesheetXml(ym, projectId='all') {
   const suffix = projectId === 'all' ? 'all' : projectName(projectId).replace(/\s+/g, '-');
   downloadText(`tabel-${settings.fio || 'user'}-${ym}-${suffix}.xls`, xml, 'application/vnd.ms-excel;charset=utf-8');
 }
-function getSupabaseClient() { if (!settings.supabaseUrl || !settings.supabaseAnonKey || !window.supabase) return null; return window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey); }
+function normalizeSupabaseUrl(url='') {
+  return String(url || '').trim().replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/,'');
+}
+function getSupabaseClient() {
+  settings.supabaseUrl = normalizeSupabaseUrl(settings.supabaseUrl);
+  if (!settings.supabaseUrl || !settings.supabaseAnonKey || !window.supabase) return null;
+  return window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey);
+}
+async function requireSupabaseUser(client) {
+  const { data: { user }, error } = await client.auth.getUser();
+  if (error || !user) throw new Error(error?.message || 'Нужен вход по email');
+  syncDiagnostics.userId = user.id || '';
+  syncDiagnostics.email = user.email || settings.email || '';
+  return user;
+}
+async function safeUpsert(client, table, rows) {
+  if (!rows || !rows.length) return true;
+  const { error } = await client.from(table).upsert(rows, { onConflict: 'id' });
+  if (error) {
+    console.warn('Sync upsert warning', table, error.message);
+    syncDiagnostics.lastError = `${table}: ${error.message}`;
+    return false;
+  }
+  return true;
+}
+async function safeSelect(client, table, mapper) {
+  const { data, error } = await client.from(table).select('*').order('updated_at', { ascending: false });
+  if (error) {
+    console.warn('Sync select warning', table, error.message);
+    syncDiagnostics.lastError = `${table}: ${error.message}`;
+    return [];
+  }
+  return (data || []).map(mapper);
+}
+async function checkCloudConnection() {
+  const client = getSupabaseClient();
+  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  setSyncState('проверка облака...', 'warn');
+  try {
+    const user = await requireSupabaseUser(client);
+    const { count, error } = await client.from('tasks').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    syncDiagnostics.remoteTasks = count ?? 0;
+    syncDiagnostics.localTasks = activeTasks().length;
+    syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    syncDiagnostics.lastError = '';
+    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${syncDiagnostics.remoteTasks}`, 'ok');
+    render();
+  } catch (e) {
+    syncDiagnostics.lastError = e.message;
+    setSyncState('ошибка проверки: ' + e.message, 'bad');
+    render();
+  }
+}
+async function pullFromCloud() {
+  const client = getSupabaseClient();
+  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  setSyncState('загрузка из облака...', 'warn');
+  try {
+    await requireSupabaseUser(client);
+    mergeProjects(await safeSelect(client, 'projects', rowToProject));
+    mergeProjectMembers(await safeSelect(client, 'project_members', rowToProjectMember));
+    mergePromises(await safeSelect(client, 'promises', rowToPromise));
+    mergeDecisions(await safeSelect(client, 'decisions', rowToDecision));
+    mergeTaskTemplates(await safeSelect(client, 'task_templates', rowToTaskTemplate));
+    mergeTasks(await safeSelect(client, 'tasks', rowToTask));
+    mergeWorkLogs(await safeSelect(client, 'work_logs', rowToWorkLog));
+    persistAll({ renderNow: false, sync: false });
+    syncDiagnostics.localTasks = activeTasks().length;
+    syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    setSyncState(`загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
+    render();
+  } catch (e) {
+    syncDiagnostics.lastError = e.message;
+    setSyncState('ошибка загрузки: ' + e.message, 'bad');
+    render();
+  }
+}
+async function pushToCloud() {
+  return performSync({ silent:false, mode:'push' });
+}
 function scheduleAutoSync(delay = 1600) {
   if (!settings.autoSync || !settings.supabaseUrl || !settings.supabaseAnonKey) return;
   clearTimeout(autoSyncTimer);
@@ -1277,7 +1369,7 @@ function scheduleAutoSync(delay = 1600) {
   autoSyncTimer = setTimeout(() => performSync({ silent: true }), delay);
 }
 async function sendMagicLink() {
-  settings.supabaseUrl = $('syncUrl').value.trim(); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings();
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim()); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings();
   const client = getSupabaseClient(); if (!client) return alert('Сначала укажи Supabase URL и publishable key.'); if (!settings.email) return alert('Укажи email.');
   const { error } = await client.auth.signInWithOtp({ email: settings.email, options: { emailRedirectTo: location.origin + location.pathname } });
   if (error) return alert(error.message);
@@ -1297,57 +1389,53 @@ function taskToRow(t, userId) { const n = normalizeTask(t); return { id: n.id, u
 function rowToTask(r) { return normalizeTask({ id: r.id, title: r.title, projectId: r.project_id || '', project: r.project || '', dueDate: r.due_date || '', planDate: r.plan_date || '', status: r.status, priority: r.priority, importance: r.importance, urgency: r.urgency, note: r.note || '', dayBucket: r.day_bucket || 'none', orderIndex: r.order_index || 0, createdAt: r.created_at, updatedAt: r.updated_at, doneAt: r.done_at, archivedAt: r.archived_at, deletedAt: r.deleted_at }); }
 function workLogToRow(l, userId) { const n = normalizeWorkLog(l); return { id: n.id, user_id: userId, work_date: n.date, project_id: n.projectId || null, project: projectName(n.projectId, n.project), hours: n.hours, mark: n.mark, comment: n.comment || null, created_at: n.createdAt, updated_at: n.updatedAt, deleted_at: n.deletedAt }; }
 function rowToWorkLog(r) { return normalizeWorkLog({ id: r.id, date: r.work_date, projectId: r.project_id || '', project: r.project || '', hours: r.hours, mark: r.mark, comment: r.comment || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
-async function performSync({ silent = false } = {}) {
+async function performSync({ silent = false, mode = 'full' } = {}) {
   if (syncInProgress) return false;
   const client = getSupabaseClient();
   if (!client) { if (!silent) alert('Сначала укажи Supabase URL и publishable key.'); return false; }
-  syncInProgress = true; setSyncState('синхронизация...', 'warn');
+  syncInProgress = true;
+  syncDiagnostics.lastError = '';
+  setSyncState(mode === 'push' ? 'выгрузка в облако...' : 'синхронизация...', 'warn');
   try {
-    const { data: { user }, error: userError } = await client.auth.getUser();
-    if (userError || !user) { setSyncState('нужен вход по email', 'bad'); if (!silent) alert('Сначала войди по ссылке из email.'); return false; }
-    const localProjects = projects.map(p => projectToRow(normalizeProject(p), user.id));
-    if (localProjects.length) { const { error } = await client.from('projects').upsert(localProjects, { onConflict: 'id' }); if (error) throw error; }
-    const localMembers = projectMembers.map(m => projectMemberToRow(normalizeProjectMember(m), user.id));
-    if (localMembers.length) { const { error } = await client.from('project_members').upsert(localMembers, { onConflict: 'id' }); if (error) throw error; }
-    const localPromises = promises.map(p => promiseToRow(normalizePromise(p), user.id));
-    if (localPromises.length) { const { error } = await client.from('promises').upsert(localPromises, { onConflict: 'id' }); if (error) throw error; }
-    const localDecisions = decisions.map(d => decisionToRow(normalizeDecision(d), user.id));
-    if (localDecisions.length) { const { error } = await client.from('decisions').upsert(localDecisions, { onConflict: 'id' }); if (error) throw error; }
-    const localTemplates = taskTemplates.map(t => taskTemplateToRow(normalizeTaskTemplate(t), user.id));
-    if (localTemplates.length) { const { error } = await client.from('task_templates').upsert(localTemplates, { onConflict: 'id' }); if (error) throw error; }
-    const localTasks = tasks.map(t => taskToRow(normalizeTask(t), user.id));
-    if (localTasks.length) { const { error } = await client.from('tasks').upsert(localTasks, { onConflict: 'id' }); if (error) throw error; }
-    const localLogs = workLogs.map(l => workLogToRow(normalizeWorkLog(l), user.id));
-    if (localLogs.length) { const { error } = await client.from('work_logs').upsert(localLogs, { onConflict: 'id' }); if (error) throw error; }
-    const { data: remoteProjects, error: pErr } = await client.from('projects').select('*').order('updated_at', { ascending: false }); if (pErr) throw pErr;
-    const { data: remoteMembers, error: mErr } = await client.from('project_members').select('*').order('updated_at', { ascending: false }); if (mErr) throw mErr;
-    const { data: remotePromises, error: prErr } = await client.from('promises').select('*').order('updated_at', { ascending: false }); if (prErr) throw prErr;
-    const { data: remoteDecisions, error: dErr } = await client.from('decisions').select('*').order('updated_at', { ascending: false }); if (dErr) throw dErr;
-    const { data: remoteTemplates, error: ttErr } = await client.from('task_templates').select('*').order('updated_at', { ascending: false }); if (ttErr) throw ttErr;
-    const { data: remoteTasks, error: tErr } = await client.from('tasks').select('*').order('updated_at', { ascending: false }); if (tErr) throw tErr;
-    const { data: remoteLogs, error: lErr } = await client.from('work_logs').select('*').order('updated_at', { ascending: false }); if (lErr) throw lErr;
-    mergeProjects((remoteProjects || []).map(rowToProject));
-    mergeProjectMembers((remoteMembers || []).map(rowToProjectMember));
-    mergePromises((remotePromises || []).map(rowToPromise));
-    mergeDecisions((remoteDecisions || []).map(rowToDecision));
-    mergeTaskTemplates((remoteTemplates || []).map(rowToTaskTemplate));
-    mergeTasks((remoteTasks || []).map(rowToTask));
-    mergeWorkLogs((remoteLogs || []).map(rowToWorkLog));
-    hardResetDeleted();
-    setSyncState('синхронизировано ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }), 'ok');
-    if (!silent) alert('Синхронизация выполнена.');
-    return true;
-  } catch (error) {
-    const msg = error?.message || String(error);
-    setSyncState('ошибка синхронизации', 'bad');
-    if (!silent) {
-      if (msg.includes('projects') && msg.includes('does not exist')) alert('В Supabase нет таблицы projects. Открой SQL Editor и выполни обновлённый supabase.sql из версии 1.5.');
-      else if (msg.includes('project_members')) alert('В Supabase нет таблицы project_members. Открой SQL Editor и выполни обновлённый supabase.sql из версии 1.6.');
-      else if (msg.includes('project_id')) alert('В Supabase нет поля project_id. Открой SQL Editor и выполни обновлённый supabase.sql из версии 1.6.');
-      else alert(msg);
+    const user = await requireSupabaseUser(client);
+
+    await safeUpsert(client, 'projects', projects.map(p => projectToRow(normalizeProject(p), user.id)));
+    await safeUpsert(client, 'project_members', projectMembers.map(m => projectMemberToRow(normalizeProjectMember(m), user.id)));
+    await safeUpsert(client, 'promises', promises.map(p => promiseToRow(normalizePromise(p), user.id)));
+    await safeUpsert(client, 'decisions', decisions.map(d => decisionToRow(normalizeDecision(d), user.id)));
+    await safeUpsert(client, 'task_templates', taskTemplates.map(t => taskTemplateToRow(normalizeTaskTemplate(t), user.id)));
+    await safeUpsert(client, 'tasks', tasks.map(t => taskToRow(normalizeTask(t), user.id)));
+    await safeUpsert(client, 'work_logs', workLogs.map(l => workLogToRow(normalizeWorkLog(l), user.id)));
+
+    if (mode !== 'push') {
+      mergeProjects(await safeSelect(client, 'projects', rowToProject));
+      mergeProjectMembers(await safeSelect(client, 'project_members', rowToProjectMember));
+      mergePromises(await safeSelect(client, 'promises', rowToPromise));
+      mergeDecisions(await safeSelect(client, 'decisions', rowToDecision));
+      mergeTaskTemplates(await safeSelect(client, 'task_templates', rowToTaskTemplate));
+      mergeTasks(await safeSelect(client, 'tasks', rowToTask));
+      mergeWorkLogs(await safeSelect(client, 'work_logs', rowToWorkLog));
     }
+
+    persistAll({ renderNow: false, sync: false });
+    const { count } = await client.from('tasks').select('id', { count: 'exact', head: true });
+    syncDiagnostics.remoteTasks = count ?? null;
+    syncDiagnostics.localTasks = activeTasks().length;
+    syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    const warning = syncDiagnostics.lastError ? ` · предупреждение: ${syncDiagnostics.lastError}` : '';
+    setSyncState(`${mode === 'push' ? 'выгружено' : 'синхронизировано'} ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}${warning}`, syncDiagnostics.lastError ? 'warn' : 'ok');
+    render();
+    return true;
+  } catch (e) {
+    console.error(e);
+    syncDiagnostics.lastError = e.message;
+    setSyncState('ошибка: ' + e.message, 'bad');
+    if (!silent) alert(e.message);
+    render();
     return false;
-  } finally { syncInProgress = false; }
+  } finally {
+    syncInProgress = false;
+  }
 }
 async function signOut() { const client = getSupabaseClient(); if (client) await client.auth.signOut(); setSyncState('выход выполнен', 'idle'); alert('Выход выполнен. Локальные данные остаются на устройстве.'); }
 const SQL_TEMPLATE = `create table if not exists public.projects (
