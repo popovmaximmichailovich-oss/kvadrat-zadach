@@ -1,5 +1,4 @@
-const APP_VERSION = '2.1.2';
-console.log('Квадрат задач version', APP_VERSION);
+const APP_VERSION = '2.2.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -7,7 +6,12 @@ const PROJECT_MEMBERS_KEY = 'eisenhower_project_members_v1';
 const PROMISES_KEY = 'eisenhower_promises_v1';
 const DECISIONS_KEY = 'eisenhower_decisions_v1';
 const TEMPLATES_KEY = 'eisenhower_templates_v1';
+const DOCS_KEY = 'eisenhower_project_docs_v1';
+const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
+const DEFAULT_SUPABASE_URL = 'https://bgoplepnfzprnagandsw.supabase.co';
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_96Juj1RHnPzgZS_ZF1OxWA_0LCjE61o';
+const PERSONAL_MODE_TEXT = 'Личное пространство: другие пользователи не видят ваши проекты и задачи.';
 
 const statusLabels = {
   inbox: 'Входящие', planned: 'Запланировано', doing: 'В работе', delegated: 'Делегировано', deferred: 'Отложено', done: 'Выполнено'
@@ -23,6 +27,8 @@ let projectMembers = loadProjectMembers();
 let promises = loadPromises();
 let decisions = loadDecisions();
 let taskTemplates = loadTaskTemplates();
+let projectDocs = loadProjectDocs();
+let adminUsers = loadAdminUsers();
 let tasks = loadTasks();
 let workLogs = loadWorkLogs();
 let currentView = 'commander';
@@ -31,7 +37,7 @@ let autoSyncTimer = null;
 let syncInProgress = false;
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
-let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, lastError: '', lastCheckedAt: '' };
+let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '' };
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -53,7 +59,22 @@ function loadProjectMembers() { return loadArray(PROJECT_MEMBERS_KEY); }
 function loadPromises() { return loadArray(PROMISES_KEY); }
 function loadDecisions() { return loadArray(DECISIONS_KEY); }
 function loadTaskTemplates() { return loadArray(TEMPLATES_KEY); }
+function loadProjectDocs() { return loadArray(DOCS_KEY); }
+function loadAdminUsers() { return loadArray(ADMIN_USERS_KEY); }
 function loadWorkLogs() { return loadArray(WORKLOGS_KEY); }
+
+function defaultVisibleViews() {
+  return ['commander','today','tomorrow','week','pmcontrol','dashboard','inbox','stuck','delegate','noproject','kanban','projects','promises','decisions','templates','evening','searchall','timesheet','archive','settings','admin','about'];
+}
+function defaultDashboardWidgets() {
+  return ['health','timeline','alerts','progress','workload','documents','calendar','team'];
+}
+const viewLabels = {
+  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Админ', about:'О приложении'
+};
+const widgetLabels = {
+  health:'Здоровье проектов', timeline:'Сроки / Гант', alerts:'Маркеры риска', progress:'Динамика выполнения', workload:'Загрузка', documents:'Документы', calendar:'Календарь iPhone', team:'3 пользователя'
+};
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
@@ -68,13 +89,18 @@ function loadSettings() {
       autoSync: s.autoSync !== false,
       lastBackupAt: s.lastBackupAt || '',
       autoArchiveDays: Number(s.autoArchiveDays || 90),
-      supabaseUrl: s.supabaseUrl || '',
-      supabaseAnonKey: s.supabaseAnonKey || '',
+      supabaseUrl: s.supabaseUrl || DEFAULT_SUPABASE_URL,
+      supabaseAnonKey: s.supabaseAnonKey || DEFAULT_SUPABASE_PUBLISHABLE_KEY,
       email: s.email || '',
-      kanbanMode: s.kanbanMode || 'compact'
+      kanbanMode: s.kanbanMode || 'compact',
+      visibleViews: Array.isArray(s.visibleViews) && s.visibleViews.length ? s.visibleViews : defaultVisibleViews(),
+      dashboardWidgets: Array.isArray(s.dashboardWidgets) && s.dashboardWidgets.length ? s.dashboardWidgets : defaultDashboardWidgets(),
+      alertDays: Number(s.alertDays || 3),
+      projectOverloadLimit: Number(s.projectOverloadLimit || 20),
+      calendarHorizonDays: Number(s.calendarHorizonDays || 90)
     };
   } catch {
-    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact' };
+    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact', visibleViews: defaultVisibleViews(), dashboardWidgets: defaultDashboardWidgets(), alertDays: 3, projectOverloadLimit: 20, calendarHorizonDays: 90, supabaseUrl: DEFAULT_SUPABASE_URL, supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY };
   }
 }
 function persistAll({ renderNow = true, sync = false } = {}) {
@@ -85,6 +111,8 @@ function persistAll({ renderNow = true, sync = false } = {}) {
   localStorage.setItem(PROMISES_KEY, JSON.stringify(promises));
   localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions));
   localStorage.setItem(TEMPLATES_KEY, JSON.stringify(taskTemplates));
+  localStorage.setItem(DOCS_KEY, JSON.stringify(projectDocs));
+  localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify(adminUsers));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   if (renderNow) render();
   if (sync) scheduleAutoSync();
@@ -177,6 +205,32 @@ function normalizeTaskTemplate(t) {
     deletedAt: t.deletedAt || t.deleted_at || null
   };
 }
+function normalizeProjectDoc(d) {
+  return {
+    id: d.id || uid(),
+    projectId: d.projectId || d.project_id || '',
+    title: String(d.title || '').trim() || 'Документ',
+    url: String(d.url || '').trim(),
+    type: d.type || 'link',
+    note: d.note || '',
+    createdAt: d.createdAt || d.created_at || nowISO(),
+    updatedAt: d.updatedAt || d.updated_at || nowISO(),
+    deletedAt: d.deletedAt || d.deleted_at || null
+  };
+}
+function normalizeAdminUser(u) {
+  return {
+    id: u.id || uid(),
+    name: String(u.name || '').trim() || 'Пользователь',
+    email: String(u.email || '').trim(),
+    role: u.role || 'Исполнитель',
+    mode: u.mode || 'Личное пространство',
+    note: u.note || '',
+    createdAt: u.createdAt || u.created_at || nowISO(),
+    updatedAt: u.updatedAt || u.updated_at || nowISO(),
+    deletedAt: u.deletedAt || u.deleted_at || null
+  };
+}
 function normalizeTask(t) {
   const legacyName = (t.project || '').trim();
   let projectId = t.projectId || t.project_id || '';
@@ -229,6 +283,8 @@ function activeProjectMembers(projectId='') { return projectMembers.filter(m => 
 function activePromises(projectId='') { return promises.filter(p => !p.deletedAt && (!projectId || p.projectId === projectId)).sort((a,b) => (a.checkDate || '9999-12-31').localeCompare(b.checkDate || '9999-12-31')); }
 function activeDecisions(projectId='') { return decisions.filter(d => !d.deletedAt && (!projectId || d.projectId === projectId)).sort((a,b) => (b.date || '').localeCompare(a.date || '')); }
 function activeTaskTemplates() { return taskTemplates.filter(t => !t.deletedAt).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
+function activeProjectDocs(projectId='') { return projectDocs.filter(d => !d.deletedAt && (!projectId || d.projectId === projectId)).sort((a,b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')); }
+function activeAdminUsers() { return adminUsers.filter(u => !u.deletedAt).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
 function activeTasks() { return tasks.filter(t => !t.deletedAt); }
 function activeWorkLogs() { return workLogs.filter(l => !l.deletedAt); }
 function projectById(id) { return id ? projects.find(p => p.id === id && !p.deletedAt) : null; }
@@ -418,6 +474,8 @@ function hardResetDeleted() {
   promises = promises.filter(p => !p.deletedAt);
   decisions = decisions.filter(d => !d.deletedAt);
   taskTemplates = taskTemplates.filter(t => !t.deletedAt);
+  projectDocs = projectDocs.filter(d => !d.deletedAt);
+  adminUsers = adminUsers.filter(u => !u.deletedAt);
   tasks = tasks.filter(t => !t.deletedAt);
   workLogs = workLogs.filter(l => !l.deletedAt);
   persistAll({ renderNow: true, sync: false });
@@ -599,6 +657,102 @@ function projectMiniCard(p, index=0) {
     <p class="task-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)} · ${escapeHtml(p.nextAction || p.stage || p.description || 'нет следующего действия')}</p>
     <div class="task-actions"><button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Паспорт</button></div>
   </article>`;
+}
+
+function projectProgress(p) {
+  const m = projectMetrics(p.id);
+  const total = m.open + m.done;
+  return total ? Math.round((m.done / total) * 100) : 0;
+}
+function deadlineDistance(date) {
+  if (!date) return null;
+  return Math.ceil((new Date(date).getTime() - new Date(today()).getTime()) / (24*60*60*1000));
+}
+function projectAlerts() {
+  const alertDays = Number(settings.alertDays || 3);
+  const alerts = [];
+  activeProjects().forEach(p => {
+    const m = projectMetrics(p.id);
+    const dueLeft = deadlineDistance(p.dueDate);
+    if (m.overdue > 0) alerts.push({ level:'red', project:p, text:`${m.overdue} просроченных задач` });
+    if (dueLeft !== null && dueLeft >= 0 && dueLeft <= alertDays) alerts.push({ level:'yellow', project:p, text:`контрольный срок через ${dueLeft} дн.` });
+    if (!(p.nextAction || '').trim()) alerts.push({ level:'orange', project:p, text:'нет следующего действия' });
+    if (m.open >= Number(settings.projectOverloadLimit || 20)) alerts.push({ level:'yellow', project:p, text:`перегруз: ${m.open} открытых задач` });
+  });
+  activeTasks().filter(t => t.status !== 'done' && t.dueDate).forEach(t => {
+    const left = deadlineDistance(t.dueDate);
+    if (left !== null && left >= 0 && left <= alertDays) alerts.push({ level:'yellow', task:t, project:projectById(t.projectId), text:`задача «${t.title}» — дедлайн через ${left} дн.` });
+  });
+  return alerts;
+}
+function renderMiniChart(values, labels=[]) {
+  const max = Math.max(1, ...values);
+  return `<div class="mini-bars">${values.map((v,i) => `<div class="mini-bar-wrap"><span>${escapeHtml(labels[i] || '')}</span><div class="mini-bar" style="height:${Math.max(6, Math.round(v/max*86))}px"></div><strong>${v}</strong></div>`).join('')}</div>`;
+}
+function renderProgressDynamics() {
+  const days = Array.from({length:14}, (_,i) => addDays(i-13));
+  const vals = days.map(d => activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === d).length);
+  return `<section class="column"><h3>Динамика закрытия задач</h3><p class="column-sub">Закрыто по дням за 14 дней</p>${renderMiniChart(vals, days.map(d => d.slice(5)))}</section>`;
+}
+function renderGanttTimeline() {
+  const ps = activeProjects().slice(0, 12);
+  const now = new Date(today()).getTime();
+  const dates = ps.flatMap(p => [p.startDate, p.dueDate]).filter(Boolean).map(d => new Date(d).getTime());
+  const min = dates.length ? Math.min(...dates, now) : now - 7*86400000;
+  const max = dates.length ? Math.max(...dates, now + 30*86400000) : now + 30*86400000;
+  const span = Math.max(1, max-min);
+  return `<section class="column control-wide"><h3>График выполнения / вехи</h3><p class="column-sub">Упрощённая диаграмма сроков по проектам</p><div class="gantt">${ps.map(p => {
+    const s = p.startDate ? new Date(p.startDate).getTime() : min;
+    const e = p.dueDate ? new Date(p.dueDate).getTime() : max;
+    const left = Math.max(0, Math.min(95, Math.round((s-min)/span*100)));
+    const width = Math.max(4, Math.min(100-left, Math.round((e-s)/span*100)));
+    const progress = projectProgress(p);
+    return `<div class="gantt-row ${projectColorClass(p)}"><span>${escapeHtml(p.name)}</span><div class="gantt-track"><div class="gantt-bar" style="left:${left}%;width:${width}%"><i style="width:${progress}%"></i></div></div><em>${progress}%</em></div>`;
+  }).join('') || '<div class="empty">Проекты со сроками не заданы</div>'}</div></section>`;
+}
+function renderAlertsPanel() {
+  const alerts = projectAlerts();
+  return `<section class="column"><h3>Маркеры и уведомления</h3><p class="column-sub">Что выпадает из контроля</p>${alerts.slice(0,12).map(a => `<div class="alert-line alert-${a.level}"><strong>${escapeHtml(a.project?.name || 'Без проекта')}</strong><span>${escapeHtml(a.text)}</span></div>`).join('') || '<div class="empty">Критичных маркеров нет</div>'}</section>`;
+}
+function renderDocumentsPanel(projectId='') {
+  const docs = activeProjectDocs(projectId);
+  return `<section class="column"><h3>Документы / хранилище</h3><p class="column-sub">Ссылки на Я.Диск, Google Drive, папки проекта, ТЗ, письма</p>${docs.slice(0,10).map(d => `<div class="doc-link"><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.title)}</a><small>${escapeHtml(projectName(d.projectId))}</small></div>`).join('') || '<div class="empty">Документы не добавлены</div>'}</section>`;
+}
+function renderCalendarPanel() {
+  const horizon = Number(settings.calendarHorizonDays || 90);
+  const until = addDays(horizon);
+  const events = [
+    ...activeTasks().filter(t => t.status !== 'done' && t.dueDate && t.dueDate <= until),
+    ...activeProjects().filter(p => p.dueDate && p.dueDate <= until).map(p => ({ title:`Веха проекта: ${p.name}`, dueDate:p.dueDate, projectId:p.id, note:p.nextAction || p.result || '' }))
+  ];
+  return `<section class="column"><h3>Календарь iPhone</h3><p class="column-sub">Экспорт контрольных сроков и задач в .ics</p><div class="metric-row"><span><strong>${events.length}</strong> событий на ${horizon} дн.</span></div><div class="task-actions"><button class="mini-btn" id="exportIcsBtn" type="button">Скачать календарь .ics</button></div></section>`;
+}
+function renderPmControl() {
+  const widgets = settings.dashboardWidgets || defaultDashboardWidgets();
+  const blocks = [];
+  blocks.push(`<section class="section-head"><div><h2>Управление проектами</h2><p>Руководительская панель: динамика, сроки, вехи, риски, документы и календарь.</p></div></section>`);
+  blocks.push(`<div class="dashboard-hero card"><div><strong>${activeProjects().length}</strong><span>проектов</span></div><div><strong>${activeTasks().filter(t=>t.status!=='done').length}</strong><span>открытых задач</span></div><div><strong>${projectAlerts().length}</strong><span>маркеров риска</span></div><div><strong>${activeProjectDocs().length}</strong><span>документов</span></div></div>`);
+  blocks.push('<div class="control-grid">');
+  if (widgets.includes('timeline')) blocks.push(renderGanttTimeline());
+  if (widgets.includes('alerts')) blocks.push(renderAlertsPanel());
+  if (widgets.includes('progress')) blocks.push(renderProgressDynamics());
+  if (widgets.includes('health')) blocks.push(`<section class="column"><h3>Здоровье проектов</h3>${activeProjects().map(p => { const h=projectHealth(p.id); return `<div class="summary-card health-${h.tone}"><h4>${escapeHtml(p.name)}</h4><p>${escapeHtml(h.title)} · ${escapeHtml(h.text)}</p></div>`; }).join('') || '<div class="empty">Проектов нет</div>'}</section>`);
+  if (widgets.includes('documents')) blocks.push(renderDocumentsPanel());
+  if (widgets.includes('calendar')) blocks.push(renderCalendarPanel());
+  if (widgets.includes('team')) blocks.push(`<section class="column"><h3>Пользователи</h3><p class="column-sub">Модель зафиксирована: каждый email работает в отдельной экосистеме под своим user_id. Общих проектов нет, задачи не пересекаются.</p>${activeAdminUsers().map(u=>`<div class="summary-card"><h4>${escapeHtml(u.name)}</h4><p>${escapeHtml(u.role)} · ${escapeHtml(u.email)}</p></div>`).join('') || '<div class="empty">Пользователи не добавлены в админ-панели</div>'}</section>`);
+  blocks.push('</div>');
+  return blocks.join('');
+}
+function icsDate(d) { return String(d || '').replace(/-/g,''); }
+function exportCalendarIcs() {
+  const horizon = Number(settings.calendarHorizonDays || 90);
+  const until = addDays(horizon);
+  const items = [
+    ...activeTasks().filter(t => t.status !== 'done' && t.dueDate && t.dueDate <= until).map(t => ({ title:`Задача: ${t.title}`, date:t.dueDate, desc:`Проект: ${projectName(t.projectId,t.project)}\\n${t.note || ''}` })),
+    ...activeProjects().filter(p => p.dueDate && p.dueDate <= until).map(p => ({ title:`Веха проекта: ${p.name}`, date:p.dueDate, desc:`Следующее действие: ${p.nextAction || ''}\\n${p.result || ''}` }))
+  ];
+  const body = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Kvadrat Zadach//PM Calendar//RU','CALSCALE:GREGORIAN', ...items.flatMap((it,idx) => ['BEGIN:VEVENT',`UID:${uid()}@kvadrat-zadach`,`DTSTAMP:${new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'')}`,`DTSTART;VALUE=DATE:${icsDate(it.date)}`,`SUMMARY:${it.title.replace(/\n/g,' ')}`,`DESCRIPTION:${(it.desc || '').replace(/\n/g,'\\n')}`,'END:VEVENT']), 'END:VCALENDAR'].join('\r\n');
+  downloadText(`kvadrat-zadach-calendar-${today()}.ics`, body, 'text/calendar;charset=utf-8');
 }
 function renderDashboard() {
   const list = activeProjects().slice(0, 12);
@@ -936,16 +1090,36 @@ function renderTimesheet() {
 }
 function renderSettings() {
   return `<section class="settings-panel card">
-    <div><h2>Синхронизация, профиль и резервные копии</h2><p>Версия 2.1.2. Приложение работает локально и синхронизируется через твой Supabase-проект.</p></div>
-    <div class="notice">Статус: ${escapeHtml(syncState.text)}. Автосинхронизация запускается после изменений и при открытии приложения.</div>
-    <div class="sync-diagnostics">
-      <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
-      <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div>
-      <div><strong>локально задач:</strong> ${activeTasks().length}</div>
-      <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
-      <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
-      ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
-    </div>
+    <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
+    <div class="notice"><strong>Версия 2.2.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    ${personalSpaceBadge()}
+    <section class="setup-wizard card">
+      <h3>Быстрый старт для нового пользователя</h3>
+      <div class="wizard-steps">
+        <div><strong>1</strong><span>Введите свой email</span></div>
+        <div><strong>2</strong><span>Нажмите «Сохранить настройки»</span></div>
+        <div><strong>3</strong><span>Нажмите «Отправить ссылку входа»</span></div>
+        <div><strong>4</strong><span>Откройте письмо на этом устройстве и синхронизируйтесь</span></div>
+      </div>
+      <p class="column-sub">Project URL и publishable key уже подставлены автоматически. Пользователю не нужно искать их в Supabase.</p>
+      <div class="task-actions"><button class="ghost" id="applyDefaultSync" type="button">Восстановить автонастройку подключения</button></div>
+    </section>
+    <section class="sync-diagnostics card">
+      <h3>Диагностика обмена между устройствами</h3>
+      <div class="sync-diagnostics-grid">
+        <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
+        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div><div><strong>режим:</strong> личное пространство</div>
+        <div><strong>локально задач:</strong> ${activeTasks().length}</div>
+        <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
+        <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
+        ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
+      </div>
+      <div class="task-actions sync-actions">
+        <button class="primary" id="checkCloud" type="button">Проверить облако</button>
+        <button class="ghost" id="pullCloud" type="button">Загрузить из облака</button>
+        <button class="ghost" id="pushCloud" type="button">Выгрузить в облако</button>
+      </div>
+    </section>
     <div class="settings-grid">
       <label>Фамилия, имя, отчество <input id="profileFio" value="${escapeHtml(settings.fio || '')}" /></label>
       <label>Должность <input id="profilePosition" value="${escapeHtml(settings.position || '')}" /></label>
@@ -958,17 +1132,12 @@ function renderSettings() {
       <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button></div>
     </div>
     <div class="settings-grid">
-      <label>Supabase Project URL <input id="syncUrl" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || ''))}" placeholder="https://xxxx.supabase.co" /></label>
-      <label>Supabase publishable key <input id="syncKey" value="${escapeHtml(settings.supabaseAnonKey || '')}" placeholder="sb_publishable_..." /></label>
+      <label>Supabase Project URL <small>заполнено автоматически</small><input id="syncUrl" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || ''))}" placeholder="https://xxxx.supabase.co" /></label>
+      <label>Supabase publishable key <small>заполнено автоматически</small><input id="syncKey" value="${escapeHtml(settings.supabaseAnonKey || '')}" placeholder="sb_publishable_..." /></label>
     </div>
     <div class="settings-grid">
-      <label>Email для входа <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" /></label>
-      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost sync-test-btn" id="checkCloud" type="button">Проверить облако</button><button class="ghost sync-test-btn" id="pullCloud" type="button">Загрузить из облака</button><button class="ghost sync-test-btn" id="pushCloud" type="button">Выгрузить в облако</button><button class="ghost" id="signOut" type="button">Выйти</button></div>
-    </div>
-    <div class="sync-repair-panel">
-      <h3>Диагностика обмена между устройствами</h3>
-      <p>Если задачи есть в Supabase, но не появляются на другом устройстве: сначала нажми «Проверить облако», затем «Загрузить из облака».</p>
-      <div class="task-actions"><button class="primary" id="checkCloud2" type="button">Проверить облако</button><button class="primary" id="pullCloud2" type="button">Загрузить из облака</button><button class="ghost" id="pushCloud2" type="button">Выгрузить в облако</button></div>
+      <label>Ваш email для личного пространства <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" /></label>
+      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost" id="signOut" type="button">Выйти</button></div>
     </div>
     <div class="settings-grid">
       <button class="ghost" id="exportBackup" type="button">Резервная копия всех данных</button>
@@ -979,16 +1148,16 @@ function renderSettings() {
 }
 function renderAbout() {
   return `<section class="settings-panel card about-page">
-    <div><h2>О приложении</h2><p>«Квадрат задач» — личный диспетчер задач, проектов и табеля. Логика: быстрый ввод → разбор → план дня → контроль → отметка работы по проекту.</p></div>
+    <div><h2>О приложении</h2><p>«Квадрат задач» — личный диспетчер задач, проектов и табеля в режиме независимого личного пространства. Логика: быстрый ввод → разбор → план дня → контроль → отметка работы по проекту.</p></div>
     <div class="about-grid">
       <div class="summary-card"><h4>1. Быстрый ввод</h4><p>Напиши задачу одной строкой. Быстрый тег #МЗМО / #РДКБ / #Сколтех сразу назначает проект.</p></div>
       <div class="summary-card"><h4>2. План дня</h4><p>Экран «Сегодня» работает по Айви Ли и 1–3–5: одна главная, три важные, пять мелких.</p></div>
       <div class="summary-card"><h4>3. Проекты</h4><p>Создай проект в разделе «Проекты». Дальше задачи и табель привязываются к нему как к отдельной сущности.</p></div>
       <div class="summary-card"><h4>4. Канбан</h4><p>Канбан показывает не хаос карточек, а статус → проект → задачи-ссылки. Нажатие открывает задачу.</p></div>
       <div class="summary-card"><h4>5. Табель</h4><p>Отмечай часы по проектам. Табель можно вывести по всем проектам или по конкретному проекту.</p></div>
-      <div class="summary-card"><h4>6. Синхронизация</h4><p>После входа через Supabase данные синхронизируются автоматически и вручную кнопкой «Синхронизировать».</p></div>
+      <div class="summary-card"><h4>6. Синхронизация</h4><p>После входа через Supabase данные синхронизируются автоматически. Каждый пользователь видит только свои данные по email/user_id.</p></div>
     </div>
-    <div class="notice">Резервная копия: вкладка «Синхронизация» → «Резервная копия всех данных». В версии 1.6 также есть дашборд проектов, паспорта проектов, роли участников, недельный отчёт и автоархив выполненных задач.</div>
+    <div class="notice">Резервная копия: вкладка «Синхронизация» → «Резервная копия всех данных». В версии 2.2.1 есть личное пространство пользователя, управленческая панель, админ-настройка вкладок, календарь .ics, документы-ссылки, дашборд проектов, паспорта проектов, недельный отчёт и автоархив.</div>
   </section>`;
 }
 
@@ -1086,14 +1255,75 @@ function moveUnfinishedToTomorrow() {
   persistAll({ renderNow: true, sync: true });
 }
 
+
+function renderAdminPanel() {
+  const views = defaultVisibleViews();
+  const widgets = defaultDashboardWidgets();
+  const currentViews = settings.visibleViews || defaultVisibleViews();
+  const currentWidgets = settings.dashboardWidgets || defaultDashboardWidgets();
+  return `<section class="section-head"><div><h2>Панель администратора</h2><p>Настройка видимости вкладок, руководительской панели, независимых пользователей и внешних хранилищ.</p></div></section>
+    <section class="card"><h3>Выводимые вкладки</h3><p class="column-sub">Скрытые вкладки не удаляют данные, а только убираются из верхнего меню.</p><div class="admin-check-grid">${views.map(v => `<label class="checkline"><input type="checkbox" class="admin-view-check" value="${v}" ${currentViews.includes(v) ? 'checked' : ''}/> ${escapeHtml(viewLabels[v] || v)}</label>`).join('')}</div>
+      <div class="task-actions"><button class="primary" id="saveAdminViews" type="button">Сохранить вкладки</button><button class="ghost" id="resetAdminViews" type="button">Вернуть все вкладки</button></div></section>
+    <section class="card"><h3>Виджеты руководительской панели</h3><div class="admin-check-grid">${widgets.map(w => `<label class="checkline"><input type="checkbox" class="admin-widget-check" value="${w}" ${currentWidgets.includes(w) ? 'checked' : ''}/> ${escapeHtml(widgetLabels[w] || w)}</label>`).join('')}</div>
+      <div class="settings-grid"><label>Маркер приближения срока, дней<input id="adminAlertDays" type="number" min="1" value="${settings.alertDays || 3}" /></label><label>Перегруз проекта, открытых задач<input id="adminOverloadLimit" type="number" min="1" value="${settings.projectOverloadLimit || 20}" /></label><label>Горизонт календаря, дней<input id="adminCalendarHorizon" type="number" min="7" value="${settings.calendarHorizonDays || 90}" /></label></div>
+      <div class="task-actions"><button class="primary" id="saveAdminWidgets" type="button">Сохранить панель</button></div></section>
+    <section class="card"><h3>Пользователи / независимые личные пространства</h3><p class="column-sub">Каждый пользователь работает в своём личном пространстве под своим email и user_id. Общих проектов и общей доски нет.</p>
+      <div class="project-form-grid"><label>Имя<input id="adminUserName" placeholder="ФИО" /></label><label>Email<input id="adminUserEmail" placeholder="email" /></label><label>Роль<select id="adminUserRole"><option>Руководитель</option><option>Исполнитель</option><option>Эксперт</option><option>Наблюдатель</option></select></label><label>Режим<select id="adminUserMode"><option>Личное пространство</option></select></label></div>
+      <label class="full-label">Комментарий<textarea id="adminUserNote" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addAdminUser" type="button">Добавить пользователя</button></div>
+      <div class="task-list">${activeAdminUsers().map(u => `<article class="task-card"><p class="task-title">${escapeHtml(u.name)}</p><div class="task-meta"><span class="badge">${escapeHtml(u.role)}</span><span class="badge">${escapeHtml(u.email)}</span><span class="badge">${escapeHtml(u.mode)}</span></div><p class="task-note">${escapeHtml(u.note)}</p><div class="task-actions"><button class="mini-btn" data-action="deleteAdminUser" data-id="${u.id}" type="button">Удалить</button></div></article>`).join('') || '<div class="empty">Пользователи не добавлены</div>'}</div></section>
+    <section class="card"><h3>Документы и хранилище</h3><p class="column-sub">Файлы лучше хранить в Я.Диске/Google Drive/корпоративном облаке, а здесь фиксировать ссылку, проект и назначение.</p>
+      <div class="project-form-grid"><label>Проект<input id="docProject" list="projectList" placeholder="Проект" /></label><label>Название документа<input id="docTitle" placeholder="ТЗ, письмо, протокол" /></label><label>Ссылка<input id="docUrl" placeholder="https://disk.yandex.ru/..." /></label><label>Тип<select id="docType"><option value="link">Ссылка</option><option value="folder">Папка</option><option value="doc">Документ</option></select></label></div>
+      <label class="full-label">Комментарий<textarea id="docNote" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addProjectDoc" type="button">Добавить документ</button></div>
+      <div class="task-list">${activeProjectDocs().map(d => `<article class="task-card"><p class="task-title"><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.title)}</a></p><div class="task-meta"><span class="badge">${escapeHtml(projectName(d.projectId))}</span><span class="badge">${escapeHtml(d.type)}</span></div><p class="task-note">${escapeHtml(d.note)}</p><div class="task-actions"><button class="mini-btn" data-action="deleteProjectDoc" data-id="${d.id}" type="button">Удалить</button></div></article>`).join('') || '<div class="empty">Документы не добавлены</div>'}</div></section>`;
+}
+function saveAdminViews() {
+  settings.visibleViews = [...document.querySelectorAll('.admin-view-check:checked')].map(x => x.value);
+  if (!settings.visibleViews.includes('admin')) settings.visibleViews.push('admin');
+  if (!settings.visibleViews.includes('settings')) settings.visibleViews.push('settings');
+  saveSettings({ renderNow:true });
+}
+function resetAdminViews() { settings.visibleViews = defaultVisibleViews(); saveSettings({ renderNow:true }); }
+function saveAdminWidgets() {
+  settings.dashboardWidgets = [...document.querySelectorAll('.admin-widget-check:checked')].map(x => x.value);
+  settings.alertDays = Number($('adminAlertDays')?.value || 3);
+  settings.projectOverloadLimit = Number($('adminOverloadLimit')?.value || 20);
+  settings.calendarHorizonDays = Number($('adminCalendarHorizon')?.value || 90);
+  saveSettings({ renderNow:true });
+}
+function addAdminUserFromForm() {
+  const email = $('adminUserEmail')?.value.trim() || '';
+  const name = $('adminUserName')?.value.trim() || email || 'Пользователь';
+  adminUsers.unshift(normalizeAdminUser({ name, email, role:$('adminUserRole')?.value || 'Исполнитель', mode:$('adminUserMode')?.value || 'Личное пространство', note:$('adminUserNote')?.value || '' }));
+  persistAll({ renderNow:true, sync:false });
+}
+function deleteAdminUser(id) { adminUsers = adminUsers.map(u => u.id === id ? normalizeAdminUser({ ...u, deletedAt: nowISO(), updatedAt: nowISO() }) : u); persistAll({ renderNow:true, sync:false }); }
+function addProjectDocFromForm() {
+  const title = $('docTitle')?.value.trim();
+  const url = $('docUrl')?.value.trim();
+  if (!title || !url) return alert('Укажи название и ссылку на документ.');
+  const projectId = projectValueFromInput($('docProject')?.value || '');
+  projectDocs.unshift(normalizeProjectDoc({ projectId, title, url, type:$('docType')?.value || 'link', note:$('docNote')?.value || '' }));
+  persistAll({ renderNow:true, sync:false });
+}
+function deleteProjectDoc(id) { projectDocs = projectDocs.map(d => d.id === id ? normalizeProjectDoc({ ...d, deletedAt: nowISO(), updatedAt: nowISO() }) : d); persistAll({ renderNow:true, sync:false }); }
+function applyVisibleViews() {
+  const visible = settings.visibleViews || defaultVisibleViews();
+  document.querySelectorAll('.tab').forEach(btn => {
+    const v = btn.dataset.view;
+    btn.style.display = visible.includes(v) || v === 'admin' || v === 'settings' ? '' : 'none';
+  });
+}
 function render() {
   renderProjectOptions();
   renderStats();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === currentView));
+  applyVisibleViews();
   const root = $('viewRoot');
   root.innerHTML = currentView === 'today' || currentView === 'tomorrow' ? renderToday()
     : currentView === 'week' ? renderWeek()
     : currentView === 'dashboard' ? renderDashboard()
+    : currentView === 'pmcontrol' ? renderPmControl()
+    : currentView === 'admin' ? renderAdminPanel()
     : currentView === 'commander' ? renderCommander()
     : currentView === 'stuck' ? renderStuckTasks()
     : currentView === 'delegate' ? renderDelegateMode()
@@ -1113,6 +1343,15 @@ function render() {
     : currentView === 'about' ? renderAbout()
     : renderSettings();
   bindDynamicActions();
+  bindSyncPanelButtons();
+}
+function bindSyncPanelButtons() {
+  const checkBtn = $('checkCloud');
+  const pullBtn = $('pullCloud');
+  const pushBtn = $('pushCloud');
+  if (checkBtn) checkBtn.onclick = (e) => { e.preventDefault(); checkCloudConnection(); };
+  if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
+  if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
 }
 function openEdit(id) {
   const t = tasks.find(x => x.id === id);
@@ -1160,6 +1399,8 @@ function bindDynamicActions() {
     if (action === 'donePromise') donePromise(id);
     if (action === 'useTemplate') useTemplate(id);
     if (action === 'deleteTemplate') deleteTemplate(id);
+    if (action === 'deleteAdminUser') deleteAdminUser(id);
+    if (action === 'deleteProjectDoc') deleteProjectDoc(id);
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
@@ -1188,6 +1429,12 @@ function bindDynamicActions() {
   if ($('addDecisionBtn')) $('addDecisionBtn').onclick = addDecisionFromForm;
   if ($('addTemplateBtn')) $('addTemplateBtn').onclick = addTemplateFromForm;
   if ($('moveUnfinishedTomorrow')) $('moveUnfinishedTomorrow').onclick = moveUnfinishedToTomorrow;
+  if ($('saveAdminViews')) $('saveAdminViews').onclick = saveAdminViews;
+  if ($('resetAdminViews')) $('resetAdminViews').onclick = resetAdminViews;
+  if ($('saveAdminWidgets')) $('saveAdminWidgets').onclick = saveAdminWidgets;
+  if ($('addAdminUser')) $('addAdminUser').onclick = addAdminUserFromForm;
+  if ($('addProjectDoc')) $('addProjectDoc').onclick = addProjectDocFromForm;
+  if ($('exportIcsBtn')) $('exportIcsBtn').onclick = exportCalendarIcs;
   if ($('addQuickTagBtn')) $('addQuickTagBtn').onclick = createQuickTagFromInput;
   if ($('quickTagName')) $('quickTagName').addEventListener('keydown', e => { if (e.key === 'Enter') createQuickTagFromInput(); });
   if ($('addWorkLog')) $('addWorkLog').onclick = () => addWorkLog({ date: $('workDate').value, project: $('workProject').value, hours: $('workHours').value, mark: $('workMark').value, comment: $('workComment').value });
@@ -1213,15 +1460,11 @@ function bindDynamicActions() {
     persistAll({ renderNow: true, sync: false });
     alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
-  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim()); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
+  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
+  if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
   if ($('syncNow')) $('syncNow').onclick = () => performSync({ silent: false });
-  if ($('checkCloud')) $('checkCloud').onclick = checkCloudConnection;
-  if ($('pullCloud')) $('pullCloud').onclick = pullFromCloud;
-  if ($('pushCloud')) $('pushCloud').onclick = pushToCloud;
-  if ($('checkCloud2')) $('checkCloud2').onclick = checkCloudConnection;
-  if ($('pullCloud2')) $('pullCloud2').onclick = pullFromCloud;
-  if ($('pushCloud2')) $('pushCloud2').onclick = pushToCloud;
+  bindSyncPanelButtons();
   if ($('signOut')) $('signOut').onclick = signOut;
   if ($('copyWeeklyReport')) $('copyWeeklyReport').onclick = async () => { await navigator.clipboard.writeText(weeklyReportText()); alert('Отчёт скопирован.'); };
   if ($('downloadWeeklyReport')) $('downloadWeeklyReport').onclick = () => downloadText(`weekly-report-${today()}.txt`, weeklyReportText(), 'text/plain;charset=utf-8');
@@ -1232,8 +1475,8 @@ function downloadText(filename, text, type='text/plain;charset=utf-8') { const b
 function exportBackup(reason='backup') {
   settings.lastBackupAt = nowISO();
   persistAll({ renderNow: false, sync: false });
-  const data = { kind: 'kvadrat-zadach-backup', reason, version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, promises, decisions, taskTemplates, tasks, workLogs, settings };
-  downloadText(`kvadrat-zadach-${reason}-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
+  const data = { kind: 'kvadrat-zadach-backup', reason, version: APP_VERSION, exportedAt: nowISO(), projects, projectMembers, promises, decisions, taskTemplates, projectDocs, adminUsers, tasks, workLogs, settings };
+  downloadText(`kvadrat-zadach-${(settings.email || 'user').replace(/[^a-zA-Z0-9а-яА-Я_-]/g,'_')}-${reason}-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
 }
 async function importJson(e) {
   const file = e.target.files[0]; if (!file) return;
@@ -1243,6 +1486,8 @@ async function importJson(e) {
   const incomingPromises = parsed.promises || [];
   const incomingDecisions = parsed.decisions || [];
   const incomingTemplates = parsed.taskTemplates || parsed.templates || [];
+  const incomingDocs = parsed.projectDocs || parsed.docs || [];
+  const incomingAdminUsers = parsed.adminUsers || [];
   const incomingTasks = Array.isArray(parsed) ? parsed : (parsed.tasks || []);
   const incomingLogs = parsed.workLogs || [];
   if (!Array.isArray(incomingTasks)) return alert('Не нашёл массив задач в файле.');
@@ -1251,6 +1496,8 @@ async function importJson(e) {
   if (Array.isArray(incomingPromises)) mergePromises(incomingPromises.map(normalizePromise));
   if (Array.isArray(incomingDecisions)) mergeDecisions(incomingDecisions.map(normalizeDecision));
   if (Array.isArray(incomingTemplates)) mergeTaskTemplates(incomingTemplates.map(normalizeTaskTemplate));
+  if (Array.isArray(incomingDocs)) mergeProjectDocs(incomingDocs.map(normalizeProjectDoc));
+  if (Array.isArray(incomingAdminUsers)) mergeAdminUsers(incomingAdminUsers.map(normalizeAdminUser));
   mergeTasks(incomingTasks.map(normalizeTask));
   mergeWorkLogs(incomingLogs.map(normalizeWorkLog));
   persistAll({ renderNow: true, sync: true });
@@ -1260,6 +1507,8 @@ function mergeProjectMembers(incoming) { const byId = new Map(projectMembers.map
 function mergePromises(incoming) { const byId = new Map(promises.map(p => [p.id, p])); for (const p of incoming) { const old = byId.get(p.id); if (!old || new Date(p.updatedAt) >= new Date(old.updatedAt)) byId.set(p.id, normalizePromise(p)); } promises = [...byId.values()]; }
 function mergeDecisions(incoming) { const byId = new Map(decisions.map(d => [d.id, d])); for (const d of incoming) { const old = byId.get(d.id); if (!old || new Date(d.updatedAt) >= new Date(old.updatedAt)) byId.set(d.id, normalizeDecision(d)); } decisions = [...byId.values()]; }
 function mergeTaskTemplates(incoming) { const byId = new Map(taskTemplates.map(t => [t.id, t])); for (const t of incoming) { const old = byId.get(t.id); if (!old || new Date(t.updatedAt) >= new Date(old.updatedAt)) byId.set(t.id, normalizeTaskTemplate(t)); } taskTemplates = [...byId.values()]; }
+function mergeProjectDocs(incoming) { const byId = new Map(projectDocs.map(d => [d.id, d])); for (const d of incoming) { const old = byId.get(d.id); if (!old || new Date(d.updatedAt) >= new Date(old.updatedAt)) byId.set(d.id, normalizeProjectDoc(d)); } projectDocs = [...byId.values()]; }
+function mergeAdminUsers(incoming) { const byId = new Map(adminUsers.map(u => [u.id, u])); for (const u of incoming) { const old = byId.get(u.id); if (!old || new Date(u.updatedAt) >= new Date(old.updatedAt)) byId.set(u.id, normalizeAdminUser(u)); } adminUsers = [...byId.values()]; }
 function mergeTasks(incoming) { const byId = new Map(tasks.map(t => [t.id, t])); for (const t of incoming) { const old = byId.get(t.id); if (!old || new Date(t.updatedAt) >= new Date(old.updatedAt)) byId.set(t.id, normalizeTask(t)); } tasks = [...byId.values()]; }
 function mergeWorkLogs(incoming) { const byId = new Map(workLogs.map(l => [l.id, l])); for (const l of incoming) { const old = byId.get(l.id); if (!old || new Date(l.updatedAt) >= new Date(old.updatedAt)) byId.set(l.id, normalizeWorkLog(l)); } workLogs = [...byId.values()]; }
 function csvEscape(s) { const v = String(s ?? ''); return /[";\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
@@ -1293,8 +1542,20 @@ function exportTimesheetXml(ym, projectId='all') {
 function normalizeSupabaseUrl(url='') {
   return String(url || '').trim().replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/,'');
 }
+function applyDefaultPersonalSyncSettings({ renderNow = true } = {}) {
+  settings.supabaseUrl = DEFAULT_SUPABASE_URL;
+  settings.supabaseAnonKey = DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  settings.autoSync = true;
+  saveSettings({ renderNow: false });
+  setSyncState('подключение настроено для личного пространства', 'ok');
+  if (renderNow) render();
+}
+function personalSpaceBadge() {
+  return `<div class="personal-space-badge"><strong>Личное пространство активно.</strong> Данные привязаны к вашему email и user_id. Другие пользователи работают независимо и не видят ваши проекты, задачи, табель, решения и обещания.</div>`;
+}
 function getSupabaseClient() {
-  settings.supabaseUrl = normalizeSupabaseUrl(settings.supabaseUrl);
+  settings.supabaseUrl = normalizeSupabaseUrl(settings.supabaseUrl || DEFAULT_SUPABASE_URL);
+  if (!settings.supabaseAnonKey) settings.supabaseAnonKey = DEFAULT_SUPABASE_PUBLISHABLE_KEY;
   if (!settings.supabaseUrl || !settings.supabaseAnonKey || !window.supabase) return null;
   return window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey);
 }
@@ -1304,6 +1565,11 @@ async function requireSupabaseUser(client) {
   syncDiagnostics.userId = user.id || '';
   syncDiagnostics.email = user.email || settings.email || '';
   return user;
+}
+async function countCloudTasks(client) {
+  const { count, error } = await client.from('tasks').select('id', { count: 'exact', head: true });
+  if (error) throw error;
+  return count ?? 0;
 }
 async function safeUpsert(client, table, rows) {
   if (!rows || !rows.length) return true;
@@ -1330,13 +1596,12 @@ async function checkCloudConnection() {
   setSyncState('проверка облака...', 'warn');
   try {
     const user = await requireSupabaseUser(client);
-    const { count, error } = await client.from('tasks').select('id', { count: 'exact', head: true });
-    if (error) throw error;
-    syncDiagnostics.remoteTasks = count ?? 0;
+    const cloudTasks = await countCloudTasks(client);
+    syncDiagnostics.remoteTasks = cloudTasks;
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastError = '';
-    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${syncDiagnostics.remoteTasks}`, 'ok');
+    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${cloudTasks}`, 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
@@ -1348,6 +1613,7 @@ async function pullFromCloud() {
   const client = getSupabaseClient();
   if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
   setSyncState('загрузка из облака...', 'warn');
+  syncDiagnostics.lastError = '';
   try {
     await requireSupabaseUser(client);
     mergeProjects(await safeSelect(client, 'projects', rowToProject));
@@ -1359,6 +1625,7 @@ async function pullFromCloud() {
     mergeWorkLogs(await safeSelect(client, 'work_logs', rowToWorkLog));
     persistAll({ renderNow: false, sync: false });
     syncDiagnostics.localTasks = activeTasks().length;
+    syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     setSyncState(`загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     render();
@@ -1369,8 +1636,9 @@ async function pullFromCloud() {
   }
 }
 async function pushToCloud() {
-  return performSync({ silent:false, mode:'push' });
+  await performSync({ silent:false, mode:'push' });
 }
+
 function scheduleAutoSync(delay = 1600) {
   if (!settings.autoSync || !settings.supabaseUrl || !settings.supabaseAnonKey) return;
   clearTimeout(autoSyncTimer);
@@ -1378,7 +1646,7 @@ function scheduleAutoSync(delay = 1600) {
   autoSyncTimer = setTimeout(() => performSync({ silent: true }), delay);
 }
 async function sendMagicLink() {
-  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim()); settings.supabaseAnonKey = $('syncKey').value.trim(); settings.email = $('syncEmail').value.trim(); saveSettings();
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings();
   const client = getSupabaseClient(); if (!client) return alert('Сначала укажи Supabase URL и publishable key.'); if (!settings.email) return alert('Укажи email.');
   const { error } = await client.auth.signInWithOtp({ email: settings.email, options: { emailRedirectTo: location.origin + location.pathname } });
   if (error) return alert(error.message);
@@ -1427,8 +1695,7 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     }
 
     persistAll({ renderNow: false, sync: false });
-    const { count } = await client.from('tasks').select('id', { count: 'exact', head: true });
-    syncDiagnostics.remoteTasks = count ?? null;
+    syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     const warning = syncDiagnostics.lastError ? ` · предупреждение: ${syncDiagnostics.lastError}` : '';
@@ -1446,7 +1713,7 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     syncInProgress = false;
   }
 }
-async function signOut() { const client = getSupabaseClient(); if (client) await client.auth.signOut(); setSyncState('выход выполнен', 'idle'); alert('Выход выполнен. Локальные данные остаются на устройстве.'); }
+
 const SQL_TEMPLATE = `create table if not exists public.projects (
   id uuid primary key,
   user_id uuid not null default auth.uid(),
@@ -1659,6 +1926,10 @@ function migrateLocalData() {
   promises = promises.map(normalizePromise);
   decisions = decisions.map(normalizeDecision);
   taskTemplates = taskTemplates.map(normalizeTaskTemplate);
+  projectDocs = projectDocs.map(normalizeProjectDoc);
+  adminUsers = adminUsers.map(normalizeAdminUser);
+  settings.visibleViews = Array.isArray(settings.visibleViews) && settings.visibleViews.length ? settings.visibleViews : defaultVisibleViews();
+  settings.dashboardWidgets = Array.isArray(settings.dashboardWidgets) && settings.dashboardWidgets.length ? settings.dashboardWidgets : defaultDashboardWidgets();
   favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
   [...tasks, ...workLogs].forEach(x => { if (x.project) ensureProject(x.project, { persist: false }); });
   tasks = tasks.map(normalizeTask);
