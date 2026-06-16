@@ -2092,3 +2092,11 @@ button.stat {
     width:100% !important;
   }
 }
+
+
+
+/* v2.3.4 blank profile defaults */
+.profile-empty-note {
+  border-color: rgba(59,130,246,.28) !important;
+  background: rgba(59,130,246,.08) !important;
+}

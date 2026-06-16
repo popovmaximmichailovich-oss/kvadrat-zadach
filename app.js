@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.3';
+const APP_VERSION = '2.3.4';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -79,12 +79,12 @@ function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     return {
-      fio: s.fio || 'Попов Максим Михайлович',
-      position: s.position || 'Руководитель проекта',
-      department: s.department || 'Бюро разработки проектов и сопровождения проектной деятельности в системе здравоохранения',
-      institution: s.institution || 'Государственное казенное учреждение Московской области «Центр внедрения изменений и обеспечения деятельности Министерства здравоохранения Московской области»',
-      defaultHours: Number(s.defaultHours || 8),
-      quickProjects: Array.isArray(s.quickProjects) && s.quickProjects.length ? s.quickProjects : ['МЗМО', 'РДКБ', 'Сколтех'],
+      fio: s.fio || '',
+      position: s.position || '',
+      department: s.department || '',
+      institution: s.institution || '',
+      defaultHours: (s.defaultHours === '' || s.defaultHours === undefined || s.defaultHours === null) ? '' : Number(s.defaultHours),
+      quickProjects: Array.isArray(s.quickProjects) ? s.quickProjects : [],
       timesheetProjectId: s.timesheetProjectId || s.timesheetProject || 'all',
       autoSync: s.autoSync !== false,
       lastBackupAt: s.lastBackupAt || '',
@@ -100,7 +100,7 @@ function loadSettings() {
       calendarHorizonDays: Number(s.calendarHorizonDays || 90)
     };
   } catch {
-    return { fio: 'Попов Максим Михайлович', position: 'Руководитель проекта', defaultHours: 8, quickProjects: ['МЗМО', 'РДКБ', 'Сколтех'], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact', visibleViews: defaultVisibleViews(), dashboardWidgets: defaultDashboardWidgets(), alertDays: 3, projectOverloadLimit: 20, calendarHorizonDays: 90, supabaseUrl: DEFAULT_SUPABASE_URL, supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY };
+    return { fio: '', position: '', institution: '', department: '', defaultHours: '', quickProjects: [], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact', visibleViews: defaultVisibleViews(), dashboardWidgets: defaultDashboardWidgets(), alertDays: 3, projectOverloadLimit: 20, calendarHorizonDays: 90, supabaseUrl: DEFAULT_SUPABASE_URL, supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY };
   }
 }
 function persistAll({ renderNow = true, sync = false } = {}) {
@@ -1095,7 +1095,7 @@ function renderTimesheet() {
     <div class="timesheet-entry">
       <label>Дата <input id="workDate" type="date" value="${today()}" /></label>
       <label>Проект <input id="workProject" list="projectList" value="${escapeHtml(list[0]?.name || '')}" placeholder="Проект" /></label>
-      <label>Часы <input id="workHours" type="number" min="0" step="0.5" value="${settings.defaultHours || 8}" /></label>
+      <label>Часы <input id="workHours" type="number" min="0" step="0.5" value="${settings.defaultHours === undefined || settings.defaultHours === null ? '' : settings.defaultHours}" /></label>
       <label>Код <select id="workMark">${Object.entries(workMarkLabels).map(([k,v]) => `<option value="${k}">${k} — ${v}</option>`).join('')}</select></label>
       <label>Комментарий <input id="workComment" placeholder="Что делал / уточнение" /></label>
       <button class="primary" id="addWorkLog" type="button">Отметить</button>
@@ -1114,7 +1114,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1143,13 +1143,14 @@ function renderSettings() {
         <button class="ghost" id="pushCloud" type="button">Выгрузить в облако</button>
       </div>
     </section>
+    <div class="notice profile-empty-note"><strong>Профиль заполняется пользователем.</strong> Эти данные не подставляются заранее и хранятся в личном пространстве текущего email.</div>
     <div class="settings-grid">
       <label>Фамилия, имя, отчество <input id="profileFio" value="${escapeHtml(settings.fio || '')}" /></label>
       <label>Должность <input id="profilePosition" value="${escapeHtml(settings.position || '')}" /></label>
       <label>Учреждение <input id="profileInstitution" value="${escapeHtml(settings.institution || '')}" /></label>
       <label>Подразделение <input id="profileDepartment" value="${escapeHtml(settings.department || '')}" /></label>
-      <label>Часы по умолчанию <input id="profileDefaultHours" type="number" min="0" step="0.5" value="${settings.defaultHours || 8}" /></label>
-      <label>Быстрые проекты / теги <input id="profileQuickProjects" value="${escapeHtml(favoriteProjects().join(', '))}" placeholder="МЗМО, РДКБ, Сколтех" /></label>
+      <label>Часы по умолчанию <input id="profileDefaultHours" type="number" min="0" step="0.5" value="${settings.defaultHours === undefined || settings.defaultHours === null ? '' : settings.defaultHours}" /></label>
+      <label>Быстрые проекты / теги <input id="profileQuickProjects" value="${escapeHtml(favoriteProjects().join(', '))}" placeholder="Например: МЗМО, РДКБ, Сколтех" /></label>
       <label>Автоархив выполненных задач, дней <input id="profileAutoArchiveDays" type="number" min="1" step="1" value="${settings.autoArchiveDays || 90}" /><small>По умолчанию 90 дней — один квартал. При изменении срока приложение выгружает резервную копию.</small></label>
       <label class="checkline"><input id="profileAutoSync" type="checkbox" ${settings.autoSync ? 'checked' : ''}/> Автосинхронизация</label>
       <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button></div>
@@ -1636,7 +1637,7 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
     settings.position = $('profilePosition').value.trim();
     settings.institution = $('profileInstitution').value.trim();
     settings.department = $('profileDepartment').value.trim();
-    settings.defaultHours = Number($('profileDefaultHours').value || 8);
+    settings.defaultHours = $('profileDefaultHours').value === '' ? '' : Number($('profileDefaultHours').value);
     settings.quickProjects = $('profileQuickProjects').value.split(',').map(x => x.trim()).filter(Boolean);
     settings.autoSync = $('profileAutoSync').checked;
     settings.autoArchiveDays = newArchiveDays;
