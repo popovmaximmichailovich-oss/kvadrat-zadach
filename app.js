@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.4';
+const APP_VERSION = '2.3.5';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -70,7 +70,7 @@ function defaultDashboardWidgets() {
   return ['health','timeline','alerts','progress','workload','documents','calendar','team'];
 }
 const viewLabels = {
-  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Админ', about:'О приложении'
+  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Глобальный поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Панель администратора', about:'О приложении'
 };
 const widgetLabels = {
   health:'Здоровье проектов', timeline:'Сроки / Гант', alerts:'Маркеры риска', progress:'Динамика выполнения', workload:'Загрузка', documents:'Документы', calendar:'Календарь iPhone', team:'3 пользователя'
@@ -1114,7 +1114,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.5</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1153,7 +1153,7 @@ function renderSettings() {
       <label>Быстрые проекты / теги <input id="profileQuickProjects" value="${escapeHtml(favoriteProjects().join(', '))}" placeholder="Например: МЗМО, РДКБ, Сколтех" /></label>
       <label>Автоархив выполненных задач, дней <input id="profileAutoArchiveDays" type="number" min="1" step="1" value="${settings.autoArchiveDays || 90}" /><small>По умолчанию 90 дней — один квартал. При изменении срока приложение выгружает резервную копию.</small></label>
       <label class="checkline"><input id="profileAutoSync" type="checkbox" ${settings.autoSync ? 'checked' : ''}/> Автосинхронизация</label>
-      <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button></div>
+      <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button><button class="ghost" id="resetProfileFields" type="button">Очистить профиль</button></div>
     </div>
     <div class="settings-grid">
       <label>Supabase Project URL <small>заполнено автоматически</small><input id="syncUrl" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || ''))}" placeholder="https://xxxx.supabase.co" /></label>
@@ -1640,12 +1640,14 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
     settings.defaultHours = $('profileDefaultHours').value === '' ? '' : Number($('profileDefaultHours').value);
     settings.quickProjects = $('profileQuickProjects').value.split(',').map(x => x.trim()).filter(Boolean);
     settings.autoSync = $('profileAutoSync').checked;
+    settings.seededProfileDefaultsCleaned = true;
     settings.autoArchiveDays = newArchiveDays;
     runAutoArchiveCompleted({ persist: false });
     favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
     persistAll({ renderNow: true, sync: false });
     alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
+  if ($('resetProfileFields')) $('resetProfileFields').onclick = resetProfileFields;
   if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
   if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
@@ -2178,6 +2180,7 @@ function initAppUpdateMechanism() {
   if ($('updateAppBtn')) $('updateAppBtn').onclick = updateAppNow;
   if ($('topUpdateBtn')) $('topUpdateBtn').onclick = updateAppNow;
   if ($('dismissUpdateBtn')) $('dismissUpdateBtn').onclick = hideUpdateBanner;
+  if ($('topSearchBtn')) $('topSearchBtn').onclick = openGlobalSearch;
   if ($('topSyncBtn')) $('topSyncBtn').onclick = openSyncSettings;
 
   if (!('serviceWorker' in navigator)) return;
@@ -2201,6 +2204,54 @@ function initAppUpdateMechanism() {
     reg.update().catch(console.warn);
     setInterval(() => reg.update().catch(console.warn), 10 * 60 * 1000);
   }).catch(console.warn);
+}
+
+
+const SEEDED_PROFILE_DEFAULTS = {
+  fio: 'Попов Максим Михайлович',
+  position: 'Руководитель проекта',
+  institution: 'Государственное казенное учреждение Московской области «Центр внедрения изменений и обеспечения деятельности Министерства здравоохранения Московской области»',
+  department: 'Бюро разработки проектов и сопровождения проектной деятельности в системе здравоохранения',
+  defaultHours: 8,
+  quickProjects: ['МЗМО', 'РДКБ', 'Сколтех', 'Саратов ПК4']
+};
+
+function sameQuickProjectsAsSeeded(list) {
+  const current = (Array.isArray(list) ? list : []).map(x => String(x || '').trim()).filter(Boolean);
+  const seeded = SEEDED_PROFILE_DEFAULTS.quickProjects;
+  return current.length && current.every(x => seeded.includes(x)) && seeded.slice(0, current.length).every((x,i) => current[i] === x);
+}
+
+function cleanupSeededProfileDefaults({ force = false, renderNow = false } = {}) {
+  const alreadyCleaned = settings.seededProfileDefaultsCleaned === true;
+  if (alreadyCleaned && !force) return false;
+  let changed = false;
+
+  if (force || settings.fio === SEEDED_PROFILE_DEFAULTS.fio) { settings.fio = ''; changed = true; }
+  if (force || settings.position === SEEDED_PROFILE_DEFAULTS.position) { settings.position = ''; changed = true; }
+  if (force || settings.institution === SEEDED_PROFILE_DEFAULTS.institution) { settings.institution = ''; changed = true; }
+  if (force || settings.department === SEEDED_PROFILE_DEFAULTS.department) { settings.department = ''; changed = true; }
+  if (force || Number(settings.defaultHours) === SEEDED_PROFILE_DEFAULTS.defaultHours) { settings.defaultHours = ''; changed = true; }
+  if (force || sameQuickProjectsAsSeeded(settings.quickProjects)) { settings.quickProjects = []; changed = true; }
+
+  settings.seededProfileDefaultsCleaned = true;
+  if (changed || force) persistAll({ renderNow, sync: false });
+  return changed;
+}
+
+function resetProfileFields() {
+  if (!confirm('Очистить ФИО, должность, учреждение, подразделение, часы по умолчанию и быстрые теги?')) return;
+  cleanupSeededProfileDefaults({ force: true, renderNow: true });
+  alert('Профиль очищен. Заполните данные вручную и нажмите «Сохранить профиль».');
+}
+
+function openGlobalSearch() {
+  currentView = 'searchall';
+  render();
+  setTimeout(() => {
+    const input = $('globalSearchInput') || $('searchInput');
+    if (input) input.focus();
+  }, 60);
 }
 
 function boot() {

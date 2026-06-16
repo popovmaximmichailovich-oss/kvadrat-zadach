@@ -2100,3 +2100,75 @@ button.stat {
   border-color: rgba(59,130,246,.28) !important;
   background: rgba(59,130,246,.08) !important;
 }
+
+
+
+/* v2.3.5 Navigation and Profile Fix */
+@media (min-width:861px) {
+  .executive-nav .tab,
+  .tabs .tab { order: 20; }
+  .executive-nav .tab[data-view="commander"], .tabs .tab[data-view="commander"] { order: 1 !important; }
+  .executive-nav .tab[data-view="today"], .tabs .tab[data-view="today"] { order: 2 !important; }
+  .executive-nav .tab[data-view="pmcontrol"], .tabs .tab[data-view="pmcontrol"] { order: 3 !important; }
+  .executive-nav .tab[data-view="searchall"], .tabs .tab[data-view="searchall"] {
+    order: 6 !important;
+    border-color: rgba(59,130,246,.28) !important;
+    background: rgba(59,130,246,.07) !important;
+  }
+  .executive-nav .tab[data-view="settings"], .tabs .tab[data-view="settings"] {
+    order: 90 !important;
+    margin-top: auto !important;
+  }
+  .executive-nav .tab[data-view="admin"], .tabs .tab[data-view="admin"] {
+    order: 91 !important;
+  }
+  .executive-nav .tab[data-view="about"], .tabs .tab[data-view="about"] {
+    order: 99 !important;
+  }
+}
+.top-action-btn {
+  white-space: nowrap;
+}
+.checkline {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-height: 44px;
+  padding: 10px 12px !important;
+  border: 1px solid rgba(148,163,184,.14);
+  border-radius: 16px;
+  background: rgba(15,23,42,.42);
+}
+.checkline input[type="checkbox"] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  flex: 0 0 18px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  position: static !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.profile-empty-note {
+  margin-bottom: 6px;
+}
+.app-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 0;
+  padding: 14px 4px 4px;
+  color: var(--muted-2, #64748b);
+  font-size: 12px;
+}
+.app-footer span {
+  overflow-wrap: anywhere;
+}
+@media (max-width:860px) {
+  .app-footer {
+    padding-bottom: 84px;
+    flex-direction: column;
+  }
+}

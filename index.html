@@ -88,6 +88,12 @@
         transform: none !important;
       }
       .executive-nav .tab:hover, .tabs .tab:hover { transform:none !important; }
+
+      .executive-nav .tab[data-view="searchall"], .tabs .tab[data-view="searchall"] { order: 50 !important; }
+      .executive-nav .tab[data-view="settings"], .tabs .tab[data-view="settings"] { order: 90 !important; }
+      .executive-nav .tab[data-view="admin"], .tabs .tab[data-view="admin"] { order: 91 !important; }
+      .executive-nav .tab[data-view="about"], .tabs .tab[data-view="about"] { order: 99 !important; margin-top:auto !important; }
+      .app-footer { grid-column: 1 / -1 !important; }
       .mobile-actionbar { display: none !important; visibility:hidden !important; height:0 !important; overflow:hidden !important; }
     }
     @media (max-width: 860px) {
@@ -136,7 +142,8 @@
         <p class="brand-subtitle">Операционный центр: день, проекты, риски, сроки, документы</p>
       </div>
       <div class="topbar-actions">
-        <span class="mode-pill">v2.3.4 · пустой профиль</span>
+        <span class="mode-pill">v2.3.5 · навигация и профиль</span>
+        <button id="topSearchBtn" class="ghost top-action-btn" type="button">Поиск</button>
         <button id="topSyncBtn" class="ghost top-action-btn" type="button">Синхронизация</button>
         <button id="topUpdateBtn" class="ghost top-action-btn hidden" type="button">Обновить приложение</button>
         <button id="installBtn" class="ghost hidden" type="button">Установить</button>
@@ -237,10 +244,10 @@
       <button class="tab" data-view="decisions" type="button">Решения</button>
       <button class="tab" data-view="templates" type="button">Шаблоны</button>
       <button class="tab" data-view="evening" type="button">Вечер</button>
-      <button class="tab" data-view="searchall" type="button">Поиск</button>
+      <button class="tab" data-view="searchall" type="button">Глобальный поиск</button>
       <button class="tab" data-view="timesheet" type="button">Табель</button>
       <button class="tab" data-view="archive" type="button">Архив</button>
-      <button class="tab" data-view="admin" type="button">Админ</button>
+      <button class="tab" data-view="admin" type="button">Панель администратора</button>
       <button class="tab" data-view="settings" type="button">Синхронизация</button>
       <button class="tab" data-view="about" type="button">О приложении</button>
     </nav>
@@ -256,6 +263,11 @@
     </section>
 
     <main id="viewRoot" class="view-root"></main>
+
+    <footer class="app-footer">
+      <span>Разработчик: Максим Попов · Квадрат задач</span>
+      <span>Личное пространство · Supabase Sync · PWA</span>
+    </footer>
   </div>
 
   <dialog id="taskDialog" class="task-dialog">

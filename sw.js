@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-3-4-blank-profile';
+const CACHE = 'kvadrat-zadach-v2-3-5-navigation-profile-fix';
 const ASSETS = [
   './',
   './index.html',
