@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.7.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -35,6 +35,8 @@ let currentView = 'commander';
 let deferredPrompt = null;
 let autoSyncTimer = null;
 let syncInProgress = false;
+let supabaseClientInstance = null;
+let supabaseClientKey = '';
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '' };
@@ -947,6 +949,37 @@ function renderFocusStrip(todays, overdue, stuck, delegate, noProject) {
   </section>`;
 }
 
+
+function renderHomeAuthStatusCard() {
+  const signedIn = Boolean(syncDiagnostics.userId);
+  const tone = signedIn ? 'ok' : 'warn';
+  const title = signedIn ? 'Вход выполнен' : 'Нужен вход по email';
+  const userText = signedIn
+    ? `${escapeHtml(syncDiagnostics.email || settings.email || 'email не указан')} · user ${escapeHtml(syncDiagnostics.userId.slice(0,8))}`
+    : `${escapeHtml(settings.email || 'email не указан')} · личное пространство не подключено к облаку`;
+  const cloudText = syncDiagnostics.remoteTasks === null || syncDiagnostics.remoteTasks === undefined
+    ? 'облако не проверено'
+    : `${syncDiagnostics.remoteTasks} задач в облаке`;
+  const lastText = syncDiagnostics.lastCheckedAt ? `проверка: ${escapeHtml(syncDiagnostics.lastCheckedAt)}` : 'проверки ещё не было';
+  return `<section class="home-auth-card card auth-${tone}">
+    <div class="home-auth-main">
+      <span class="auth-dot"></span>
+      <div>
+        <strong>${title}</strong>
+        <p>${userText}</p>
+      </div>
+    </div>
+    <div class="home-auth-meta">
+      <span>${escapeHtml(cloudText)}</span>
+      <span>${escapeHtml(lastText)}</span>
+    </div>
+    <div class="home-auth-actions">
+      <button class="${signedIn ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${signedIn ? 'Открыть синхронизацию' : 'Войти / синхронизировать'}</button>
+      <button class="ghost compact-primary" data-action="checkCloudFromHome" type="button">Проверить облако</button>
+    </div>
+  </section>`;
+}
+
 function renderCommander() {
   const todays = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
   const overdue = activeTasks().filter(isOverdue);
@@ -957,6 +990,7 @@ function renderCommander() {
   const attention = attentionProjects(6);
   const next = todays.find(t => t.dayBucket === 'one') || todays.find(t => t.priority === 'A') || overdue[0] || stuck[0] || todays[0];
   return `<section class="section-head executive-day-head"><div><span class="view-kicker">операционный центр</span><h2>День</h2><p>Главный экран руководителя: фокус, риски, задачи на сегодня и проекты, которые требуют внимания.</p></div></section>
+  ${renderHomeAuthStatusCard()}
   ${renderFocusStrip(todays, overdue, stuck, delegate, noProject)}
   ${todayOverloadNotice(todays)}
   <section class="day-focus-card card">
@@ -1201,7 +1235,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.7.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.7.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1228,6 +1262,7 @@ function renderSettings() {
         <button class="primary" id="checkCloud" type="button">Проверить облако</button>
         <button class="ghost" id="pullCloud" type="button">Загрузить из облака</button>
         <button class="ghost" id="pushCloud" type="button">Выгрузить в облако</button>
+        <button class="danger" id="logoutCloud" type="button">Выйти из облака</button>
       </div>
     </section>
     <div class="notice profile-empty-note"><strong>Профиль заполняется пользователем.</strong> Эти данные не подставляются заранее и хранятся в личном пространстве текущего email.</div>
@@ -1613,13 +1648,27 @@ function render() {
   bindDynamicActions();
   bindSyncPanelButtons();
 }
+
+async function logoutCloud() {
+  const client = getSupabaseClient();
+  if (!client) return;
+  try { await client.auth.signOut({ scope:'local' }); } catch (e) { console.warn(e); }
+  syncDiagnostics.userId = '';
+  syncDiagnostics.email = settings.email || '';
+  syncDiagnostics.remoteTasks = null;
+  syncDiagnostics.lastError = '';
+  setSyncState('выход выполнен · нужен вход по email', 'warn');
+  render();
+}
 function bindSyncPanelButtons() {
   const checkBtn = $('checkCloud');
   const pullBtn = $('pullCloud');
   const pushBtn = $('pushCloud');
+  const logoutBtn = $('logoutCloud');
   if (checkBtn) checkBtn.onclick = (e) => { e.preventDefault(); checkCloudConnection(); };
   if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
   if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
+  if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
 }
 function openEdit(id) {
   const t = tasks.find(x => x.id === id);
@@ -1728,6 +1777,7 @@ function bindDynamicActions() {
     if (action === 'filterTodayFromStats') filterTodayFromStats();
     if (action === 'openInboxFromStats') openInboxFromStats();
     if (action === 'openSyncFromStats') openSyncFromStats();
+    if (action === 'checkCloudFromHome') checkCloudConnection();
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
@@ -1797,7 +1847,7 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('enableAdminMode')) $('enableAdminMode').onclick = enableAdminMode;
   if ($('disableAdminMode')) $('disableAdminMode').onclick = disableAdminMode;
   if ($('backToDayFromAdmin')) $('backToDayFromAdmin').onclick = () => { currentView = 'commander'; render(); };
-  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
+  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); refreshAuthState({ renderNow:true }); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
   if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
   if ($('syncNow')) $('syncNow').onclick = () => performSync({ silent: false });
@@ -1890,20 +1940,103 @@ function applyDefaultPersonalSyncSettings({ renderNow = true } = {}) {
 function personalSpaceBadge() {
   return `<div class="personal-space-badge"><strong>Личное пространство активно.</strong> Данные привязаны к вашему email и user_id. Другие пользователи работают независимо и не видят ваши проекты, задачи, табель, решения и обещания.</div>`;
 }
+function getAuthRedirectUrl() {
+  return new URL('./', window.location.href).href.split('#')[0].split('?')[0];
+}
 function getSupabaseClient() {
   settings.supabaseUrl = normalizeSupabaseUrl(settings.supabaseUrl || DEFAULT_SUPABASE_URL);
   if (!settings.supabaseAnonKey) settings.supabaseAnonKey = DEFAULT_SUPABASE_PUBLISHABLE_KEY;
   if (!settings.supabaseUrl || !settings.supabaseAnonKey || !window.supabase) return null;
-  return window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey);
+  const key = `${settings.supabaseUrl}|${settings.supabaseAnonKey}`;
+  if (supabaseClientInstance && supabaseClientKey === key) return supabaseClientInstance;
+  supabaseClientKey = key;
+  supabaseClientInstance = window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      flowType: 'implicit',
+      storage: window.localStorage,
+      storageKey: 'kvadrat-zadach-auth-session'
+    },
+    global: {
+      headers: { 'x-client-info': `kvadrat-zadach/${APP_VERSION}` }
+    }
+  });
+  return supabaseClientInstance;
 }
 function isMissingAuthSessionError(error) {
   const msg = String(error?.message || error || '').toLowerCase();
-  return msg.includes('auth session missing') || msg.includes('session missing') || msg.includes('missing session') || msg.includes('invalid refresh token');
+  return msg.includes('auth session missing') || msg.includes('session missing') || msg.includes('missing session') || msg.includes('invalid refresh token') || msg.includes('refresh token not found') || msg.includes('jwt expired');
 }
 function friendlyAuthMessage() {
-  return 'Нужно войти в личное пространство на этом устройстве: введите email, нажмите «Сохранить настройки», затем «Отправить ссылку входа» и откройте письмо на этом же устройстве.';
+  return 'Нужно войти в личное пространство на этом устройстве: откройте раздел «Синхронизация», введите email, нажмите «Сохранить настройки», затем «Отправить ссылку входа» и откройте письмо на этом же устройстве.';
+}
+function isAuthNeededError(e) {
+  const msg = String(e?.message || e || '').toLowerCase();
+  return msg.includes('нужно войти') || msg.includes('нужен вход') || isMissingAuthSessionError(msg);
+}
+async function getCurrentAuthSession(client = getSupabaseClient()) {
+  if (!client) return null;
+  try {
+    const { data, error } = await client.auth.getSession();
+    if (error) {
+      if (isMissingAuthSessionError(error)) return null;
+      console.warn('getSession warning:', error.message);
+      return null;
+    }
+    const session = data?.session || null;
+    if (session?.user) {
+      syncDiagnostics.userId = session.user.id || '';
+      syncDiagnostics.email = session.user.email || settings.email || '';
+    }
+    return session;
+  } catch (e) {
+    console.warn('getSession failed:', e);
+    return null;
+  }
+}
+async function refreshAuthState({ renderNow = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) return false;
+  const session = await getCurrentAuthSession(client);
+  if (session?.user) {
+    syncDiagnostics.userId = session.user.id || '';
+    syncDiagnostics.email = session.user.email || settings.email || '';
+    syncDiagnostics.lastError = '';
+    setSyncState(`вход выполнен · ${session.user.email || session.user.id.slice(0,8)}`, 'ok');
+    if (renderNow) render();
+    return true;
+  }
+  syncDiagnostics.userId = '';
+  syncDiagnostics.email = settings.email || '';
+  setSyncState('нужен вход по email', 'warn');
+  if (renderNow) render();
+  return false;
+}
+async function processAuthRedirectIfNeeded() {
+  const hasAuthParams = /access_token|refresh_token|type=recovery|type=magiclink|code=/.test(location.hash + location.search);
+  const client = getSupabaseClient();
+  if (!client) return;
+  try {
+    const { data, error } = await client.auth.getSession();
+    if (error && !isMissingAuthSessionError(error)) console.warn('Auth redirect/session warning:', error.message);
+    if (data?.session?.user) {
+      syncDiagnostics.userId = data.session.user.id || '';
+      syncDiagnostics.email = data.session.user.email || settings.email || '';
+      setSyncState(`вход выполнен · ${data.session.user.email || data.session.user.id.slice(0,8)}`, 'ok');
+    }
+    if (hasAuthParams) {
+      history.replaceState({}, document.title, location.origin + location.pathname);
+    }
+  } catch (e) {
+    console.warn('processAuthRedirectIfNeeded failed:', e);
+  }
 }
 async function requireSupabaseUser(client) {
+  const session = await getCurrentAuthSession(client);
+  if (session?.user) return session.user;
+
   const { data: { user }, error } = await client.auth.getUser();
   if (error || !user) {
     if (isMissingAuthSessionError(error)) throw new Error(friendlyAuthMessage());
@@ -1952,7 +2085,7 @@ async function checkCloudConnection() {
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
-    setSyncState('ошибка проверки: ' + e.message, 'bad');
+    setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка проверки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
 }
@@ -1978,7 +2111,7 @@ async function pullFromCloud() {
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
-    setSyncState('ошибка загрузки: ' + e.message, 'bad');
+    setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка загрузки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
 }
@@ -1993,11 +2126,22 @@ function scheduleAutoSync(delay = 1600) {
   autoSyncTimer = setTimeout(() => performSync({ silent: true }), delay);
 }
 async function sendMagicLink() {
-  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings();
-  const client = getSupabaseClient(); if (!client) return alert('Сначала укажи Supabase URL и publishable key.'); if (!settings.email) return alert('Укажи email.');
-  const { error } = await client.auth.signInWithOtp({ email: settings.email, options: { emailRedirectTo: location.origin + location.pathname } });
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL);
+  settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  settings.email = $('syncEmail').value.trim();
+  saveSettings({ renderNow:false });
+  const client = getSupabaseClient();
+  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  if (!settings.email) return alert('Укажи email.');
+  const redirectTo = getAuthRedirectUrl();
+  const { error } = await client.auth.signInWithOtp({
+    email: settings.email,
+    options: { emailRedirectTo: redirectTo, shouldCreateUser: true }
+  });
   if (error) return alert(error.message);
-  alert('Ссылка входа отправлена на email. Открой письмо на этом же устройстве, затем вернись в приложение и нажми «Проверить облако» или «Синхронизировать».');
+  setSyncState('ссылка входа отправлена на email', 'warn');
+  render();
+  alert('Ссылка входа отправлена. Откройте письмо на этом же устройстве. После возврата приложение само восстановит вход; затем нажмите «Проверить облако».');
 }
 function projectToRow(p, userId) { return { id: p.id, user_id: userId, name: p.name, code: p.code || null, status: p.status || 'active', owner: p.owner || null, customer: p.customer || null, stage: p.stage || null, start_date: p.startDate || null, due_date: p.dueDate || null, result: p.result || null, next_action: p.nextAction || null, description: p.description || null, note: p.note || null, color: p.color || null, created_at: p.createdAt, updated_at: p.updatedAt, deleted_at: p.deletedAt }; }
 function rowToProject(r) { return normalizeProject({ id: r.id, name: r.name, code: r.code || '', status: r.status || 'active', owner: r.owner || '', customer: r.customer || '', stage: r.stage || '', startDate: r.start_date || '', dueDate: r.due_date || '', result: r.result || '', nextAction: r.next_action || '', description: r.description || '', note: r.note || '', color: r.color || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
@@ -2050,10 +2194,15 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     render();
     return true;
   } catch (e) {
-    console.error(e);
+    console.warn(e);
     syncDiagnostics.lastError = e.message;
-    setSyncState('ошибка: ' + e.message, 'bad');
-    if (!silent) alert(e.message);
+    if (isAuthNeededError(e)) {
+      setSyncState('нужен вход по email', 'warn');
+      if (!silent) alert(friendlyAuthMessage());
+    } else {
+      setSyncState('ошибка: ' + e.message, 'bad');
+      if (!silent) alert(e.message);
+    }
     render();
     return false;
   } finally {
@@ -2416,6 +2565,7 @@ function openGlobalSearch() {
 
 function boot() {
   migrateLocalData();
+  processAuthRedirectIfNeeded().then(() => refreshAuthState({ renderNow:false }));
   runAutoArchiveCompleted({ persist: false });
   $('quickAddBtn').onclick = addTask;
   $('quickTitle').addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
@@ -2429,9 +2579,9 @@ function boot() {
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; $('installBtn').classList.remove('hidden'); });
   $('installBtn').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; $('installBtn').classList.add('hidden'); };
   initAppUpdateMechanism();
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) performSync({ silent: true }); });
-  setInterval(() => performSync({ silent: true }), 120000);
+  document.addEventListener('visibilitychange', async () => { if (!document.hidden && await refreshAuthState({ renderNow:false })) performSync({ silent: true }); });
+  setInterval(async () => { if (await refreshAuthState({ renderNow:false })) performSync({ silent: true }); }, 120000);
   render();
-  setTimeout(() => performSync({ silent: true }), 2000);
+  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) performSync({ silent: true }); }, 2000);
 }
 boot();
