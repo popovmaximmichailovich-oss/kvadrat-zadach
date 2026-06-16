@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-3-6-ui-cleanup';
+const CACHE = 'kvadrat-zadach-v2-3-7-user-mode-cleanup';
 const ASSETS = [
   './',
   './index.html',

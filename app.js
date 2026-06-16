@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.6';
+const APP_VERSION = '2.3.7';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -64,13 +64,13 @@ function loadAdminUsers() { return loadArray(ADMIN_USERS_KEY); }
 function loadWorkLogs() { return loadArray(WORKLOGS_KEY); }
 
 function defaultVisibleViews() {
-  return ['commander','today','tomorrow','week','pmcontrol','dashboard','inbox','stuck','delegate','noproject','kanban','projects','promises','decisions','templates','evening','searchall','timesheet','archive','settings','admin','about'];
+  return ['commander','today','pmcontrol','tomorrow','week','projects','kanban','inbox','stuck','delegate','noproject','promises','decisions','evening','searchall','timesheet','archive','settings','about'];
 }
 function defaultDashboardWidgets() {
   return ['health','timeline','alerts','progress','workload','documents','calendar','team'];
 }
 const viewLabels = {
-  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Глобальный поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Панель администратора', about:'О приложении'
+  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Панель администратора', about:'О приложении'
 };
 const widgetLabels = {
   health:'Здоровье проектов', timeline:'Сроки / Гант', alerts:'Маркеры риска', progress:'Динамика выполнения', workload:'Загрузка', documents:'Документы', calendar:'Календарь iPhone', team:'3 пользователя'
@@ -97,10 +97,11 @@ function loadSettings() {
       dashboardWidgets: Array.isArray(s.dashboardWidgets) && s.dashboardWidgets.length ? s.dashboardWidgets : defaultDashboardWidgets(),
       alertDays: Number(s.alertDays || 3),
       projectOverloadLimit: Number(s.projectOverloadLimit || 20),
-      calendarHorizonDays: Number(s.calendarHorizonDays || 90)
+      calendarHorizonDays: Number(s.calendarHorizonDays || 90),
+      adminMode: s.adminMode === true
     };
   } catch {
-    return { fio: '', position: '', institution: '', department: '', defaultHours: '', quickProjects: [], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact', visibleViews: defaultVisibleViews(), dashboardWidgets: defaultDashboardWidgets(), alertDays: 3, projectOverloadLimit: 20, calendarHorizonDays: 90, supabaseUrl: DEFAULT_SUPABASE_URL, supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY };
+    return { fio: '', position: '', institution: '', department: '', defaultHours: '', quickProjects: [], timesheetProjectId: 'all', autoSync: true, autoArchiveDays: 90, kanbanMode: 'compact', visibleViews: defaultVisibleViews(), dashboardWidgets: defaultDashboardWidgets(), alertDays: 3, projectOverloadLimit: 20, calendarHorizonDays: 90, adminMode: false, supabaseUrl: DEFAULT_SUPABASE_URL, supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY };
   }
 }
 function persistAll({ renderNow = true, sync = false } = {}) {
@@ -1114,7 +1115,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.6</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.7</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1144,6 +1145,13 @@ function renderSettings() {
       </div>
     </section>
     <div class="notice profile-empty-note"><strong>Профиль заполняется пользователем.</strong> Эти данные не подставляются заранее и хранятся в личном пространстве текущего email.</div>
+<section class="admin-mode-note card">
+      <h3>Административный режим</h3>
+      <p>Тонкие настройки скрыты от обычных пользователей. Включайте их только для настройки приложения.</p>
+      <div class="task-actions">
+        ${settings.adminMode ? '<button class="danger" id="disableAdminMode" type="button">Выключить административный режим</button>' : '<button class="ghost" id="enableAdminMode" type="button">Включить административный режим</button>'}
+      </div>
+    </section>
     <div class="settings-grid">
       <label>Фамилия, имя, отчество <input id="profileFio" value="${escapeHtml(settings.fio || '')}" /></label>
       <label>Должность <input id="profilePosition" value="${escapeHtml(settings.position || '')}" /></label>
@@ -1280,6 +1288,28 @@ function moveUnfinishedToTomorrow() {
 }
 
 
+
+function renderAdminLocked() {
+  return `<section class="settings-panel card admin-locked-panel">
+    <div><h2>Панель администратора скрыта</h2><p>Обычным пользователям не показываются тонкие настройки интерфейса, виджетов, порогов и системных параметров.</p></div>
+    <div class="notice">Для ежедневной работы используйте разделы «День», «Сегодня», «Управление», «Проекты», «Канбан», «Поиск», «Табель» и «Синхронизация».</div>
+    <div class="task-actions"><button class="ghost" id="backToDayFromAdmin" type="button">Вернуться в День</button></div>
+  </section>`;
+}
+function enableAdminMode() {
+  settings.adminMode = true;
+  saveSettings({ renderNow:false });
+  currentView = 'admin';
+  render();
+}
+function disableAdminMode() {
+  settings.adminMode = false;
+  settings.visibleViews = (settings.visibleViews || defaultVisibleViews()).filter(v => v !== 'admin');
+  saveSettings({ renderNow:false });
+  currentView = 'commander';
+  render();
+}
+
 function renderAdminPanel() {
   const views = defaultVisibleViews();
   const widgets = defaultDashboardWidgets();
@@ -1395,7 +1425,7 @@ function applyAdminPreset(name) {
 }
 function saveAdminViews() {
   settings.visibleViews = [...document.querySelectorAll('.admin-view-check:checked')].map(x => x.value);
-  if (!settings.visibleViews.includes('admin')) settings.visibleViews.push('admin');
+  if (settings.adminMode && !settings.visibleViews.includes('admin')) settings.visibleViews.push('admin');
   if (!settings.visibleViews.includes('settings')) settings.visibleViews.push('settings');
   saveSettings({ renderNow:true });
   alert('Состав меню сохранён.');
@@ -1449,11 +1479,17 @@ function addProjectDocFromForm() {
   persistAll({ renderNow:true, sync:false });
 }
 function deleteProjectDoc(id) { projectDocs = projectDocs.map(d => d.id === id ? normalizeProjectDoc({ ...d, deletedAt: nowISO(), updatedAt: nowISO() }) : d); persistAll({ renderNow:true, sync:false }); }
+
+function userVisibleViews() {
+  const allowedForUser = ['commander','today','pmcontrol','tomorrow','week','projects','kanban','inbox','stuck','delegate','noproject','promises','decisions','evening','searchall','timesheet','archive','settings','about'];
+  const base = Array.isArray(settings.visibleViews) && settings.visibleViews.length ? settings.visibleViews : defaultVisibleViews();
+  return settings.adminMode ? [...new Set([...base, 'admin'])] : base.filter(v => v !== 'admin' && allowedForUser.includes(v));
+}
 function applyVisibleViews() {
-  const visible = settings.visibleViews || defaultVisibleViews();
+  const visible = userVisibleViews();
   document.querySelectorAll('.tab').forEach(btn => {
     const v = btn.dataset.view;
-    btn.style.display = visible.includes(v) || v === 'admin' || v === 'settings' ? '' : 'none';
+    btn.style.display = visible.includes(v) || v === 'settings' ? '' : 'none';
   });
 }
 function render() {
@@ -1467,7 +1503,7 @@ function render() {
     : currentView === 'week' ? renderWeek()
     : currentView === 'dashboard' ? renderDashboard()
     : currentView === 'pmcontrol' ? renderPmControl()
-    : currentView === 'admin' ? renderAdminPanel()
+    : currentView === 'admin' ? (settings.adminMode ? renderAdminPanel() : renderAdminLocked())
     : currentView === 'commander' ? renderCommander()
     : currentView === 'stuck' ? renderStuckTasks()
     : currentView === 'delegate' ? renderDelegateMode()
@@ -1649,6 +1685,9 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
     alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
   if ($('resetProfileFields')) $('resetProfileFields').onclick = resetProfileFields;
+  if ($('enableAdminMode')) $('enableAdminMode').onclick = enableAdminMode;
+  if ($('disableAdminMode')) $('disableAdminMode').onclick = disableAdminMode;
+  if ($('backToDayFromAdmin')) $('backToDayFromAdmin').onclick = () => { currentView = 'commander'; render(); };
   if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); scheduleAutoSync(500); };
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
   if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
