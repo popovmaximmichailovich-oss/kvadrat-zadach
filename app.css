@@ -2172,3 +2172,167 @@ button.stat {
     flex-direction: column;
   }
 }
+
+
+
+/* v2.3.6 UI cleanup: clean switches, navigation order, system screens */
+@media (min-width:861px) {
+  .app-shell {
+    grid-template-columns: 252px minmax(0, 1fr) !important;
+    column-gap: 20px !important;
+  }
+  .executive-nav, .tabs {
+    width:252px !important;
+    min-width:252px !important;
+    max-width:252px !important;
+  }
+
+  /* Logical navigation order */
+  .executive-nav .tab, .tabs .tab { order: 50 !important; }
+  .executive-nav .tab[data-view="commander"], .tabs .tab[data-view="commander"] { order: 1 !important; }
+  .executive-nav .tab[data-view="today"], .tabs .tab[data-view="today"] { order: 2 !important; }
+  .executive-nav .tab[data-view="tomorrow"], .tabs .tab[data-view="tomorrow"] { order: 3 !important; }
+  .executive-nav .tab[data-view="week"], .tabs .tab[data-view="week"] { order: 4 !important; }
+  .executive-nav .tab[data-view="pmcontrol"], .tabs .tab[data-view="pmcontrol"] { order: 5 !important; }
+  .executive-nav .tab[data-view="dashboard"], .tabs .tab[data-view="dashboard"] { order: 6 !important; }
+  .executive-nav .tab[data-view="projects"], .tabs .tab[data-view="projects"] { order: 7 !important; }
+  .executive-nav .tab[data-view="kanban"], .tabs .tab[data-view="kanban"] { order: 8 !important; }
+  .executive-nav .tab[data-view="inbox"], .tabs .tab[data-view="inbox"] { order: 9 !important; }
+  .executive-nav .tab[data-view="stuck"], .tabs .tab[data-view="stuck"] { order: 10 !important; }
+  .executive-nav .tab[data-view="delegate"], .tabs .tab[data-view="delegate"] { order: 11 !important; }
+  .executive-nav .tab[data-view="noproject"], .tabs .tab[data-view="noproject"] { order: 12 !important; }
+  .executive-nav .tab[data-view="promises"], .tabs .tab[data-view="promises"] { order: 20 !important; }
+  .executive-nav .tab[data-view="decisions"], .tabs .tab[data-view="decisions"] { order: 21 !important; }
+  .executive-nav .tab[data-view="templates"], .tabs .tab[data-view="templates"] { order: 22 !important; }
+  .executive-nav .tab[data-view="evening"], .tabs .tab[data-view="evening"] { order: 23 !important; }
+  .executive-nav .tab[data-view="timesheet"], .tabs .tab[data-view="timesheet"] { order: 24 !important; }
+  .executive-nav .tab[data-view="archive"], .tabs .tab[data-view="archive"] { order: 25 !important; }
+  .executive-nav .tab[data-view="searchall"], .tabs .tab[data-view="searchall"] {
+    order: 30 !important;
+    border-color: rgba(59,130,246,.28) !important;
+    background: rgba(59,130,246,.07) !important;
+  }
+  .executive-nav .tab[data-view="settings"], .tabs .tab[data-view="settings"] {
+    order: 90 !important;
+    margin-top: auto !important;
+    border-color: rgba(245,158,11,.30) !important;
+    background: rgba(245,158,11,.08) !important;
+  }
+  .executive-nav .tab[data-view="admin"], .tabs .tab[data-view="admin"] {
+    order: 91 !important;
+  }
+  .executive-nav .tab[data-view="about"], .tabs .tab[data-view="about"] {
+    order: 99 !important;
+    color: #94a3b8 !important;
+  }
+
+  body[data-current-view="admin"] .quick-add,
+  body[data-current-view="admin"] .toolbar,
+  body[data-current-view="settings"] .quick-add,
+  body[data-current-view="settings"] .toolbar,
+  body[data-current-view="about"] .quick-add,
+  body[data-current-view="about"] .toolbar {
+    display: none !important;
+  }
+
+  body[data-current-view="admin"] .view-root,
+  body[data-current-view="settings"] .view-root,
+  body[data-current-view="about"] .view-root {
+    grid-area: quick / quick / main / main !important;
+    padding-top: 2px;
+  }
+}
+
+/* Fix broken switch UI in admin panel */
+.admin-widget-switch,
+.admin-switch {
+  position: relative !important;
+  overflow: hidden !important;
+}
+.admin-widget-switch {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 46px !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+.admin-widget-switch::before,
+.admin-widget-switch::after {
+  content: none !important;
+  display: none !important;
+}
+.admin-widget-switch input,
+.admin-switch input,
+.admin-view-check,
+.admin-widget-check {
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  pointer-events: none !important;
+}
+.admin-widget-switch > span {
+  grid-column: 1 !important;
+  min-width: 0 !important;
+}
+.admin-widget-switch > span::after,
+.admin-switch .switch-ui {
+  content: "" !important;
+  display: block !important;
+  width: 42px !important;
+  height: 24px !important;
+  border-radius: 999px !important;
+  background: rgba(100,116,139,.32) !important;
+  border: 1px solid rgba(148,163,184,.24) !important;
+  position: absolute !important;
+  right: 14px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+}
+.admin-widget-switch > span::before,
+.admin-switch .switch-ui::after {
+  content: "" !important;
+  display: block !important;
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 999px !important;
+  background: #cbd5e1 !important;
+  position: absolute !important;
+  right: 36px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  transition: right .18s ease, background .18s ease !important;
+  z-index: 2 !important;
+}
+.admin-widget-switch:has(input:checked) > span::after,
+.admin-switch:has(input:checked) .switch-ui {
+  background: rgba(245,158,11,.32) !important;
+  border-color: rgba(245,158,11,.54) !important;
+}
+.admin-widget-switch:has(input:checked) > span::before,
+.admin-switch:has(input:checked) .switch-ui::after {
+  right: 20px !important;
+  background: #fbbf24 !important;
+}
+.admin-widget-switch strong,
+.admin-widget-switch small {
+  max-width: calc(100% - 58px);
+}
+
+/* Footer belongs to content column, not random corner */
+@media (min-width:861px) {
+  .app-footer {
+    grid-column: 2 / 3 !important;
+    padding: 8px 4px 18px !important;
+    margin: 0 !important;
+  }
+}
+
+/* Keep profile checkbox normal */
+.checkline input[type="checkbox"] {
+  position: static !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  width: 18px !important;
+  height: 18px !important;
+  flex: 0 0 18px !important;
+}

@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.5';
+const APP_VERSION = '2.3.6';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1114,7 +1114,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.5</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.6</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1457,6 +1457,7 @@ function applyVisibleViews() {
   });
 }
 function render() {
+  document.body.dataset.currentView = currentView;
   renderProjectOptions();
   renderStats();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === currentView));
@@ -2222,17 +2223,28 @@ function sameQuickProjectsAsSeeded(list) {
   return current.length && current.every(x => seeded.includes(x)) && seeded.slice(0, current.length).every((x,i) => current[i] === x);
 }
 
+function looksLikeSeededProfileValue(value, patterns) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return false;
+  return patterns.some(p => v.includes(String(p).toLowerCase()));
+}
+
 function cleanupSeededProfileDefaults({ force = false, renderNow = false } = {}) {
-  const alreadyCleaned = settings.seededProfileDefaultsCleaned === true;
-  if (alreadyCleaned && !force) return false;
   let changed = false;
 
-  if (force || settings.fio === SEEDED_PROFILE_DEFAULTS.fio) { settings.fio = ''; changed = true; }
-  if (force || settings.position === SEEDED_PROFILE_DEFAULTS.position) { settings.position = ''; changed = true; }
-  if (force || settings.institution === SEEDED_PROFILE_DEFAULTS.institution) { settings.institution = ''; changed = true; }
-  if (force || settings.department === SEEDED_PROFILE_DEFAULTS.department) { settings.department = ''; changed = true; }
-  if (force || Number(settings.defaultHours) === SEEDED_PROFILE_DEFAULTS.defaultHours) { settings.defaultHours = ''; changed = true; }
-  if (force || sameQuickProjectsAsSeeded(settings.quickProjects)) { settings.quickProjects = []; changed = true; }
+  const seededFio = settings.fio === SEEDED_PROFILE_DEFAULTS.fio || looksLikeSeededProfileValue(settings.fio, ['попов максим']);
+  const seededPosition = settings.position === SEEDED_PROFILE_DEFAULTS.position || looksLikeSeededProfileValue(settings.position, ['руководитель проекта']);
+  const seededInstitution = settings.institution === SEEDED_PROFILE_DEFAULTS.institution || looksLikeSeededProfileValue(settings.institution, ['государственное казенное учреждение московской области', 'центр внедрения изменений']);
+  const seededDepartment = settings.department === SEEDED_PROFILE_DEFAULTS.department || looksLikeSeededProfileValue(settings.department, ['бюро разработки проектов', 'сопровождения проектной деятельности']);
+  const seededHours = Number(settings.defaultHours) === SEEDED_PROFILE_DEFAULTS.defaultHours;
+  const seededTags = sameQuickProjectsAsSeeded(settings.quickProjects);
+
+  if (force || seededFio) { settings.fio = ''; changed = true; }
+  if (force || seededPosition) { settings.position = ''; changed = true; }
+  if (force || seededInstitution) { settings.institution = ''; changed = true; }
+  if (force || seededDepartment) { settings.department = ''; changed = true; }
+  if (force || seededHours) { settings.defaultHours = ''; changed = true; }
+  if (force || seededTags) { settings.quickProjects = []; changed = true; }
 
   settings.seededProfileDefaultsCleaned = true;
   if (changed || force) persistAll({ renderNow, sync: false });
