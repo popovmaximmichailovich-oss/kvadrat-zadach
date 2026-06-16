@@ -2420,3 +2420,295 @@ button.stat {
 .admin-switch:has(input:checked) .switch-ui::after {
   right: 20px !important;
 }
+
+
+
+/* v2.3.8 Admin typography */
+.admin-toggle-group h4 {
+  font-size: 15px !important;
+  line-height: 1.25 !important;
+  letter-spacing: .055em !important;
+  font-weight: 900 !important;
+  color: #f8fafc !important;
+  margin-bottom: 12px !important;
+}
+.admin-switch .switch-text {
+  font-size: 14px !important;
+  line-height: 1.25 !important;
+  font-weight: 800 !important;
+}
+.admin-widget-switch strong {
+  font-size: 15px !important;
+  line-height: 1.25 !important;
+}
+.admin-widget-switch small {
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+}
+.admin-card-head h3 {
+  font-size: 20px !important;
+}
+.admin-card-head p {
+  font-size: 14px !important;
+  line-height: 1.45 !important;
+}
+@media (max-width: 640px) {
+  .admin-toggle-group h4 {
+    font-size: 16px !important;
+  }
+  .admin-switch .switch-text {
+    font-size: 15px !important;
+  }
+}
+
+
+
+/* v2.7.0 Product Layer — day, cards, analytics, mobile, docs/calendar */
+.executive-day-head h2 { font-size: clamp(30px, 4vw, 46px); }
+.executive-focus-strip {
+  display:grid;
+  grid-template-columns: repeat(5, minmax(0,1fr));
+  gap:10px;
+  padding:14px;
+}
+.executive-focus-strip button,
+.split-actions button,
+.executive-hero button,
+.summary-card.health-red,
+.summary-card.health-orange,
+.summary-card.health-yellow,
+.summary-card.health-green,
+.workload-row,
+.event-row {
+  cursor:pointer;
+}
+.executive-focus-strip button {
+  text-align:left;
+  border:1px solid rgba(148,163,184,.16);
+  border-radius:18px;
+  background:rgba(15,23,42,.62);
+  color:var(--text);
+  padding:14px;
+}
+.executive-focus-strip button strong {
+  display:block;
+  font-size:32px;
+  line-height:1;
+}
+.executive-focus-strip button span {
+  display:block;
+  margin-top:6px;
+  color:var(--muted);
+}
+.executive-focus-strip .danger-metric {
+  border-color:rgba(239,68,68,.38);
+  background:rgba(239,68,68,.12);
+}
+.day-focus-card {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:18px;
+  align-items:center;
+  padding:18px;
+}
+.day-focus-main h3 {
+  margin:4px 0 6px;
+  font-size:clamp(22px, 3vw, 34px);
+  letter-spacing:-.04em;
+  line-height:1.05;
+}
+.day-focus-main p {
+  margin:0;
+  color:var(--muted);
+}
+.executive-day-grid {
+  display:grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr);
+  gap:16px;
+}
+.day-column-large { grid-row: span 2; }
+.risk-task-line {
+  width:100%;
+  text-align:left;
+  display:grid;
+  gap:3px;
+  border:1px solid rgba(148,163,184,.16);
+  border-radius:16px;
+  background:rgba(15,23,42,.58);
+  color:var(--text);
+  padding:11px 12px;
+  margin-bottom:8px;
+}
+.risk-task-line span { color:var(--muted); font-size:12px; }
+.risk-red { border-color:rgba(239,68,68,.40); background:rgba(239,68,68,.10); }
+.risk-yellow { border-color:rgba(245,158,11,.34); background:rgba(245,158,11,.08); }
+.executive-project-list,
+.health-list,
+.workload-list,
+.event-list,
+.doc-list {
+  display:grid;
+  gap:8px;
+}
+.executive-project-card {
+  width:100%;
+  text-align:left;
+  border:1px solid rgba(148,163,184,.16);
+  border-radius:16px;
+  background:rgba(15,23,42,.58);
+  color:var(--text);
+  padding:12px;
+}
+.executive-project-card > div {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.executive-project-card p,
+.executive-project-card small {
+  display:block;
+  color:var(--muted);
+  margin:5px 0 0;
+  line-height:1.35;
+}
+.split-actions {
+  display:grid;
+  gap:10px;
+}
+.split-actions button {
+  display:grid;
+  gap:4px;
+  text-align:left;
+  padding:14px;
+  border-radius:18px;
+  border:1px solid rgba(148,163,184,.16);
+  background:rgba(15,23,42,.58);
+  color:var(--text);
+}
+.split-actions strong {
+  font-size:30px;
+  line-height:1;
+}
+.split-actions span {
+  color:var(--muted);
+}
+.primary-mini {
+  color:#111827 !important;
+  background:linear-gradient(135deg,#fbbf24,#f97316) !important;
+  border-color:rgba(251,191,36,.45) !important;
+}
+.ghost-mini {
+  opacity:.88;
+}
+.task-actions-compact {
+  margin-top:10px;
+}
+.task-actions-compact .mini-btn {
+  min-width:auto;
+}
+.workload-row {
+  position:relative;
+  overflow:hidden;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 42px;
+  gap:10px;
+  align-items:center;
+  width:100%;
+  text-align:left;
+  padding:11px 12px;
+  border-radius:16px;
+  border:1px solid rgba(148,163,184,.16);
+  background:rgba(15,23,42,.58);
+  color:var(--text);
+}
+.workload-row span,
+.workload-row b {
+  position:relative;
+  z-index:2;
+}
+.workload-row i {
+  position:absolute;
+  left:0;
+  bottom:0;
+  height:3px;
+  background:var(--project-color, var(--accent));
+}
+.doc-link-rich {
+  text-decoration:none;
+  padding:12px;
+  border-radius:16px;
+}
+.doc-link-rich strong,
+.doc-link-rich span,
+.doc-link-rich small {
+  display:block;
+}
+.doc-link-rich span,
+.doc-link-rich small {
+  margin-top:3px;
+  color:var(--muted);
+}
+.event-row {
+  width:100%;
+  text-align:left;
+  display:grid;
+  gap:3px;
+  border:1px solid rgba(148,163,184,.16);
+  border-radius:16px;
+  background:rgba(15,23,42,.58);
+  color:var(--text);
+  padding:11px 12px;
+}
+.event-row strong { color:#fed7aa; }
+.event-row span { font-weight:800; }
+.event-row small { color:var(--muted); }
+.search-command {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:12px;
+  padding:14px;
+}
+.muted-count {
+  color:var(--muted);
+  font-size:13px;
+}
+.metric-risk {
+  border-color:rgba(239,68,68,.42) !important;
+  background:linear-gradient(145deg, rgba(127,29,29,.32), rgba(15,23,42,.64)) !important;
+}
+.metric-ok {
+  border-color:rgba(34,197,94,.32) !important;
+}
+@media (max-width: 1180px) {
+  .executive-day-grid {
+    grid-template-columns:1fr;
+  }
+  .day-column-large { grid-row:auto; }
+}
+@media (max-width: 860px) {
+  .executive-focus-strip {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .day-focus-card {
+    grid-template-columns:1fr;
+  }
+  .day-focus-card .task-actions {
+    display:grid;
+    grid-template-columns:1fr;
+  }
+  .search-command {
+    grid-template-columns:1fr;
+  }
+  .executive-focus-strip button strong,
+  .split-actions strong {
+    font-size:26px;
+  }
+}
+@media (max-width: 560px) {
+  .executive-focus-strip {
+    grid-template-columns:1fr;
+  }
+  .executive-hero {
+    grid-template-columns:1fr !important;
+  }
+}

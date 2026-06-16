@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.7';
+const APP_VERSION = '2.7.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -70,7 +70,7 @@ function defaultDashboardWidgets() {
   return ['health','timeline','alerts','progress','workload','documents','calendar','team'];
 }
 const viewLabels = {
-  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхр.', admin:'Панель администратора', about:'О приложении'
+  commander:'День', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхронизация', admin:'Панель администратора', about:'О приложении'
 };
 const widgetLabels = {
   health:'Здоровье проектов', timeline:'Сроки / Гант', alerts:'Маркеры риска', progress:'Динамика выполнения', workload:'Загрузка', documents:'Документы', calendar:'Календарь iPhone', team:'3 пользователя'
@@ -514,29 +514,30 @@ function taskToneClass(t) {
 function taskCard(t) {
   const overdue = isOverdue(t);
   const pName = projectName(t.projectId, t.project);
+  const mainAction = t.status !== 'done'
+    ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>`
+    : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
   return `<article class="task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
     <div class="task-card-topline"><span class="task-state-dot"></span><p class="task-title">${escapeHtml(t.title)}</p></div>
     <div class="task-meta">
       <span class="badge priority-${t.priority}">${priorityLabels[t.priority] || t.priority}</span>
       <span class="badge">${statusLabels[t.status]}</span>
       <span class="badge">${escapeHtml(pName)}</span>
-      ${t.planDate ? `<span class="badge">план: ${dateLabel(t.planDate)}</span>` : ''}
       ${t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок: ${dateLabel(t.dueDate)}</span>` : ''}
+      ${t.planDate ? `<span class="badge">план: ${dateLabel(t.planDate)}</span>` : ''}
       ${t.dayBucket !== 'none' ? `<span class="badge">${bucketLabels[t.dayBucket]}</span>` : ''}
-      ${t.archivedAt ? `<span class="badge">в автоархиве</span>` : ''}
-      <span class="badge">${t.importance === 'high' ? 'значимо' : 'не значимо'} / ${t.urgency === 'high' ? 'дедлайн близко' : 'не дедлайн близко'}</span>
     </div>
     ${t.note ? `<p class="task-note">${escapeHtml(t.note)}</p>` : ''}
-    <div class="task-actions">
-      ${t.status !== 'done' ? `<button class="mini-btn" data-action="done" data-id="${t.id}" type="button">Готово</button>` : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`}
-      <button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>
-      <button class="mini-btn" data-action="tomorrow" data-id="${t.id}" type="button">Завтра</button>
-      <button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>
-      ${t.projectId ? `<button class="mini-btn" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}
-      <button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Править</button>
+    <div class="task-actions task-actions-compact">
+      ${mainAction}
+      <button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button>
+      ${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}
+      ${t.planDate !== today() && t.status !== 'done' ? `<button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>` : ''}
+      ${t.projectId ? `<button class="mini-btn ghost-mini" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}
     </div>
   </article>`;
 }
+
 function listHtml(list, emptyText = 'Задач нет') {
   const items = sortTasks(list);
   if (!items.length) return `<div class="empty">${emptyText}</div>`;
@@ -738,35 +739,66 @@ function renderAlertsPanel() {
 }
 function renderDocumentsPanel(projectId='') {
   const docs = activeProjectDocs(projectId);
-  return `<section class="column"><h3>Документы / хранилище</h3><p class="column-sub">Ссылки на Я.Диск, Google Drive, папки проекта, ТЗ, письма</p>${docs.slice(0,10).map(d => `<div class="doc-link"><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.title)}</a><small>${escapeHtml(projectName(d.projectId))}</small></div>`).join('') || '<div class="empty">Документы не добавлены</div>'}</section>`;
+  return `<section class="column documents-panel"><div class="column-title-row"><div><h3>Документы / хранилище</h3><p class="column-sub">Ссылки на Я.Диск, Google Drive, папки проекта, ТЗ, письма.</p></div><span class="metric-pill">${docs.length}</span></div>
+    <div class="doc-list">${docs.slice(0,10).map(d => `<a class="doc-link doc-link-rich" href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(d.title)}</strong><span>${escapeHtml(projectName(d.projectId))} · ${escapeHtml(d.type || 'ссылка')}</span><small>${escapeHtml(d.note || '')}</small></a>`).join('') || '<div class="empty">Документы не добавлены. Добавить ссылки можно в административном режиме.</div>'}</div>
+  </section>`;
 }
+
 function renderCalendarPanel() {
   const horizon = Number(settings.calendarHorizonDays || 90);
   const until = addDays(horizon);
   const events = [
-    ...activeTasks().filter(t => t.status !== 'done' && t.dueDate && t.dueDate <= until),
-    ...activeProjects().filter(p => p.dueDate && p.dueDate <= until).map(p => ({ title:`Веха проекта: ${p.name}`, dueDate:p.dueDate, projectId:p.id, note:p.nextAction || p.result || '' }))
-  ];
-  return `<section class="column calendar-card"><div class="column-title-row"><div><h3>Календарь iPhone</h3><p class="column-sub">Экспорт контрольных сроков и задач в .ics</p></div><span class="metric-pill">${horizon} дн.</span></div><div class="calendar-metric"><strong>${events.length}</strong><span>событий попадёт в календарь</span></div><div class="task-actions"><button class="primary compact-primary" id="exportIcsBtn" type="button">Скачать календарь .ics</button></div></section>`;
+    ...activeTasks().filter(t => t.status !== 'done' && t.dueDate && t.dueDate <= until).map(t => ({ title:t.title, dueDate:t.dueDate, projectId:t.projectId, kind:'задача' })),
+    ...activeProjects().filter(p => p.dueDate && p.dueDate <= until).map(p => ({ title:`Веха: ${p.name}`, dueDate:p.dueDate, projectId:p.id, kind:'проект' }))
+  ].sort((a,b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  return `<section class="column calendar-card"><div class="column-title-row"><div><h3>Календарь iPhone</h3><p class="column-sub">Контрольные сроки и вехи на горизонте ${horizon} дней.</p></div><span class="metric-pill">${events.length}</span></div>
+    <div class="calendar-metric"><strong>${events.length}</strong><span>событий попадёт в календарь</span></div>
+    <div class="event-list">${events.slice(0,6).map(e => `<button class="event-row" data-action="openProjects" data-project-id="${e.projectId || ''}" type="button"><strong>${dateLabel(e.dueDate)}</strong><span>${escapeHtml(e.title)}</span><small>${escapeHtml(e.kind)} · ${escapeHtml(projectName(e.projectId))}</small></button>`).join('') || '<div class="empty">Событий на горизонте нет</div>'}</div>
+    <div class="task-actions"><button class="primary compact-primary" id="exportIcsBtn" type="button">Скачать календарь .ics</button></div>
+  </section>`;
 }
+
+function renderWorkloadPanel() {
+  const byProject = activeProjects().map(p => {
+    const m = projectMetrics(p.id);
+    return { p, m };
+  }).filter(x => x.m.open > 0).sort((a,b) => b.m.open - a.m.open).slice(0,8);
+  const max = Math.max(1, ...byProject.map(x => x.m.open));
+  return `<section class="column workload-panel"><div class="column-title-row"><div><h3>Загрузка по проектам</h3><p class="column-sub">Где накопилось больше всего открытых задач.</p></div></div>
+    <div class="workload-list">${byProject.map(x => `<button class="workload-row ${projectColorClass(x.p)}" data-action="openProjects" data-project-id="${x.p.id}" type="button"><span>${escapeHtml(x.p.name)}</span><b>${x.m.open}</b><i style="width:${Math.max(6, Math.round(x.m.open/max*100))}%"></i></button>`).join('') || '<div class="empty">Нет открытых задач</div>'}</div>
+  </section>`;
+}
+
 function renderPmControl() {
   const widgets = settings.dashboardWidgets || defaultDashboardWidgets();
-  const blocks = [];
   const openTasks = activeTasks().filter(t=>t.status!=='done').length;
+  const doneWeek = activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) >= addDays(-7)).length;
   const alertsCount = projectAlerts().length;
-  blocks.push(`<section class="section-head view-hero"><div><span class="view-kicker">центр управления</span><h2>Управление проектами</h2><p>Динамика, сроки, вехи, риски, документы и календарь в одном управленческом экране.</p></div></section>`);
-  blocks.push(`<div class="dashboard-hero executive-hero card"><button data-action="adminPreset" data-preset="leader" type="button"><strong>${activeProjects().length}</strong><span>проектов</span></button><button data-action="showOpenTasks" type="button"><strong>${openTasks}</strong><span>открытых задач</span></button><button data-action="showRiskSummary" type="button" class="${alertsCount ? 'metric-risk' : 'metric-ok'}"><strong>${alertsCount}</strong><span>маркеров риска</span></button><button data-action="openAdminDocs" type="button"><strong>${activeProjectDocs().length}</strong><span>документов</span></button></div>`);
+  const overdueCount = activeTasks().filter(isOverdue).length;
+  const docsCount = activeProjectDocs().length;
+  const blocks = [];
+  blocks.push(`<section class="section-head view-hero"><div><span class="view-kicker">управление проектами</span><h2>Управление</h2><p>Сроки, риски, динамика, документы и календарь. Всё кликабельно: цифры ведут к действиям.</p></div></section>`);
+  blocks.push(`<div class="dashboard-hero executive-hero card">
+    <button data-action="openProjectsQuick" type="button"><strong>${activeProjects().length}</strong><span>проектов</span></button>
+    <button data-action="showOpenTasks" type="button"><strong>${openTasks}</strong><span>открытых задач</span></button>
+    <button data-action="showRiskSummary" type="button" class="${alertsCount ? 'metric-risk' : 'metric-ok'}"><strong>${alertsCount}</strong><span>маркеров риска</span></button>
+    <button data-action="filterArchiveWeek" type="button"><strong>${doneWeek}</strong><span>закрыто за 7 дней</span></button>
+    <button data-action="openAdminDocs" type="button"><strong>${docsCount}</strong><span>документов</span></button>
+    <button data-action="exportCalendarQuick" type="button"><strong>${Number(settings.calendarHorizonDays || 90)}</strong><span>дней в календарь</span></button>
+  </div>`);
   blocks.push('<div class="control-grid">');
   if (widgets.includes('timeline')) blocks.push(renderGanttTimeline());
   if (widgets.includes('alerts')) blocks.push(renderAlertsPanel());
   if (widgets.includes('progress')) blocks.push(renderProgressDynamics());
-  if (widgets.includes('health')) blocks.push(`<section class="column"><h3>Здоровье проектов</h3>${activeProjects().map(p => { const h=projectHealth(p.id); return `<div class="summary-card health-${h.tone}"><h4>${escapeHtml(p.name)}</h4><p>${escapeHtml(h.title)} · ${escapeHtml(h.text)}</p></div>`; }).join('') || '<div class="empty">Проектов нет</div>'}</section>`);
+  if (widgets.includes('health')) blocks.push(`<section class="column"><div class="column-title-row"><div><h3>Здоровье проектов</h3><p class="column-sub">Состояние по просрочке, движению и следующему действию.</p></div></div><div class="health-list">${activeProjects().map(p => { const h=projectHealth(p.id); return `<button class="summary-card health-${h.tone}" data-action="openProjects" data-project-id="${p.id}" type="button"><h4>${escapeHtml(p.name)}</h4><p>${escapeHtml(h.title)} · ${escapeHtml(h.text)}</p></button>`; }).join('') || '<div class="empty">Проектов нет</div>'}</div></section>`);
+  if (widgets.includes('workload')) blocks.push(renderWorkloadPanel());
   if (widgets.includes('documents')) blocks.push(renderDocumentsPanel());
   if (widgets.includes('calendar')) blocks.push(renderCalendarPanel());
-  if (widgets.includes('team')) blocks.push(`<section class="column"><h3>Пользователи</h3><p class="column-sub">Модель зафиксирована: каждый email работает в отдельной экосистеме под своим user_id. Общих проектов нет, задачи не пересекаются.</p>${activeAdminUsers().map(u=>`<div class="summary-card"><h4>${escapeHtml(u.name)}</h4><p>${escapeHtml(u.role)} · ${escapeHtml(u.email)}</p></div>`).join('') || '<div class="empty">Пользователи не добавлены в админ-панели</div>'}</section>`);
+  if (widgets.includes('team')) blocks.push(`<section class="column"><h3>Пользователи</h3><p class="column-sub">Каждый email работает в отдельной экосистеме под своим user_id.</p>${activeAdminUsers().map(u=>`<div class="summary-card"><h4>${escapeHtml(u.name)}</h4><p>${escapeHtml(u.role)} · ${escapeHtml(u.email)}</p></div>`).join('') || '<div class="empty">Пользователи не добавлены</div>'}</section>`);
   blocks.push('</div>');
   return blocks.join('');
 }
+
 function icsDate(d) { return String(d || '').replace(/-/g,''); }
 function exportCalendarIcs() {
   const horizon = Number(settings.calendarHorizonDays || 90);
@@ -880,25 +912,79 @@ function todayOverloadNotice(list) {
   if (list.length <= 9) return '';
   return `<div class="notice">На сегодня ${list.length} задач. Это перегруз. Лучше оставить 1 главную, 3 важные и до 5 мелких, остальное перенести.</div>`;
 }
+
+function attentionProjects(limit=6) {
+  return activeProjects().map(p => {
+    const m = projectMetrics(p.id);
+    const h = projectHealth(p.id);
+    const dueLeft = deadlineDistance(p.dueDate);
+    const score = (m.overdue * 10) + (h.tone === 'red' ? 8 : h.tone === 'orange' ? 6 : h.tone === 'yellow' ? 4 : 0) + (dueLeft !== null && dueLeft <= Number(settings.alertDays || 3) ? 5 : 0);
+    return { p, m, h, dueLeft, score };
+  }).filter(x => x.score > 0 || x.m.open > 0).sort((a,b) => b.score - a.score || b.m.open - a.m.open).slice(0, limit);
+}
+function executiveProjectCard(x) {
+  const { p, m, h, dueLeft } = x;
+  const dueText = p.dueDate ? (dueLeft < 0 ? `просрочен на ${Math.abs(dueLeft)} дн.` : `срок через ${dueLeft} дн.`) : 'без срока';
+  return `<button class="executive-project-card health-${h.tone} ${projectColorClass(p)}" data-action="openProjects" data-project-id="${p.id}" type="button">
+    <div><span class="color-dot"></span><strong>${escapeHtml(p.name)}</strong></div>
+    <p>${escapeHtml(h.title)} · ${escapeHtml(h.text)} · ${escapeHtml(dueText)}</p>
+    <small>${m.open} открытых · ${m.overdue} просрочено · ${m.doing} в работе</small>
+  </button>`;
+}
+function riskTaskLine(t) {
+  return `<button class="risk-task-line ${isOverdue(t) ? 'risk-red' : 'risk-yellow'}" data-action="edit" data-id="${t.id}" type="button">
+    <strong>${escapeHtml(t.title)}</strong>
+    <span>${escapeHtml(projectName(t.projectId, t.project))}${t.dueDate ? ' · срок: ' + dateLabel(t.dueDate) : ''}</span>
+  </button>`;
+}
+function renderFocusStrip(todays, overdue, stuck, delegate, noProject) {
+  return `<section class="executive-focus-strip card">
+    <button data-action="filterTodayFromStats" type="button"><strong>${todays.length}</strong><span>на сегодня</span></button>
+    <button data-action="showRiskSummary" type="button" class="${overdue.length ? 'danger-metric' : ''}"><strong>${overdue.length}</strong><span>просрочено</span></button>
+    <button data-action="setViewStuck" type="button"><strong>${stuck.length}</strong><span>зависло</span></button>
+    <button data-action="setViewDelegate" type="button"><strong>${delegate.length}</strong><span>делегировать</span></button>
+    <button data-action="setViewNoProject" type="button"><strong>${noProject.length}</strong><span>без проекта</span></button>
+  </section>`;
+}
+
 function renderCommander() {
   const todays = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
   const overdue = activeTasks().filter(isOverdue);
   const stuck = getStuckTasks();
   const delegate = getDelegateCandidates();
   const noProject = activeTasks().filter(t => t.status !== 'done' && !t.projectId);
-  const coldProjects = activeProjects().filter(p => daysSinceIso(projectLastActivity(p.id)) >= 7);
-  return `<section class="section-head"><div><h2>Командный экран дня</h2><p>Короткая управленческая выжимка: что делать, где пожар, что зависло и что можно делегировать.</p></div></section>
-  <div class="dashboard-hero card"><div><strong>${todays.length}</strong><span>сегодня</span></div><div><strong>${overdue.length}</strong><span>просрочено</span></div><div><strong>${stuck.length}</strong><span>зависло</span></div><div><strong>${delegate.length}</strong><span>делегировать</span></div></div>
+  const soon = activeTasks().filter(t => t.status !== 'done' && t.dueDate && !isOverdue(t) && deadlineDistance(t.dueDate) <= Number(settings.alertDays || 3));
+  const attention = attentionProjects(6);
+  const next = todays.find(t => t.dayBucket === 'one') || todays.find(t => t.priority === 'A') || overdue[0] || stuck[0] || todays[0];
+  return `<section class="section-head executive-day-head"><div><span class="view-kicker">операционный центр</span><h2>День</h2><p>Главный экран руководителя: фокус, риски, задачи на сегодня и проекты, которые требуют внимания.</p></div></section>
+  ${renderFocusStrip(todays, overdue, stuck, delegate, noProject)}
   ${todayOverloadNotice(todays)}
-  <div class="grid-2">
-    <section class="column"><h3>Сегодня важно</h3>${listHtml(todays.slice(0,9), 'На сегодня задач нет')}</section>
-    <section class="column"><h3>Просрочено</h3>${listHtml(overdue, 'Просрочки нет')}</section>
-    <section class="column"><h3>Зависло</h3>${listHtml(stuck, 'Зависших задач нет')}</section>
-    <section class="column"><h3>Без проекта</h3>${listHtml(noProject, 'Все задачи привязаны к проектам')}</section>
-    <section class="column"><h3>Что делегировать</h3>${listHtml(delegate, 'Кандидатов на делегирование нет')}</section>
-    <section class="column"><h3>Давно не трогал</h3>${coldProjects.length ? coldProjects.map(p => `<div class="summary-card ${projectColorClass(p)}"><h4><span class="color-dot"></span>${escapeHtml(p.name)}</h4><p>${projectHealth(p.id).text}</p><div class="task-actions"><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Открыть проект</button></div></div>`).join('') : '<div class="empty">Нет холодных проектов</div>'}</section>
+  <section class="day-focus-card card">
+    <div class="day-focus-main">
+      <span class="view-kicker">фокус дня</span>
+      <h3>${next ? escapeHtml(next.title) : 'Главная задача не выбрана'}</h3>
+      <p>${next ? `${escapeHtml(projectName(next.projectId,next.project))}${next.dueDate ? ' · срок: ' + dateLabel(next.dueDate) : ''}` : 'Выберите одну главную задачу на сегодня или добавьте её через командный ввод.'}</p>
+    </div>
+    <div class="task-actions">
+      ${next ? `<button class="primary compact-primary" data-action="edit" data-id="${next.id}" type="button">Открыть задачу</button>` : '<button class="primary compact-primary" data-action="openInboxFromStats" type="button">Открыть разбор</button>'}
+      <button class="ghost compact-primary" data-action="filterTodayFromStats" type="button">План дня</button>
+    </div>
+  </section>
+
+  <div class="executive-day-grid">
+    <section class="column day-column day-column-large"><div class="column-title-row"><div><h3>Сегодня важно</h3><p class="column-sub">Задачи на день: главное, важное и короткие действия.</p></div><span class="metric-pill">${todays.length}</span></div>${listHtml(todays.slice(0,10), 'На сегодня задач нет')}</section>
+    <section class="column day-column"><div class="column-title-row"><div><h3>Риски и просрочка</h3><p class="column-sub">То, что требует реакции.</p></div><span class="metric-pill">${overdue.length + soon.length}</span></div>${[...overdue.slice(0,5), ...soon.slice(0,5)].slice(0,8).map(riskTaskLine).join('') || '<div class="empty">Критичных рисков нет</div>'}</section>
+    <section class="column day-column"><div class="column-title-row"><div><h3>Проекты внимания</h3><p class="column-sub">Проекты с рисками, сроками или отсутствием движения.</p></div><span class="metric-pill">${attention.length}</span></div><div class="executive-project-list">${attention.map(executiveProjectCard).join('') || '<div class="empty">Проекты в норме</div>'}</div></section>
+    <section class="column day-column"><div class="column-title-row"><div><h3>Делегировать / разобрать</h3><p class="column-sub">Снять лишнее с личного контура.</p></div></div>
+      <div class="split-actions">
+        <button data-action="setViewDelegate" type="button"><strong>${delegate.length}</strong><span>кандидатов на делегирование</span></button>
+        <button data-action="openInboxFromStats" type="button"><strong>${activeTasks().filter(t=>t.status==='inbox').length}</strong><span>задач на разбор</span></button>
+        <button data-action="setViewNoProject" type="button"><strong>${noProject.length}</strong><span>без проекта</span></button>
+      </div>
+    </section>
   </div>`;
 }
+
 function renderStuckTasks() {
   return `<section class="section-head"><div><h2>Зависшие задачи</h2><p>Задачи в работе, отложенные, делегированные или давно не обновлявшиеся.</p></div></section>${listHtml(getStuckTasks(), 'Зависших задач нет')}`;
 }
@@ -1115,7 +1201,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.7</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.7.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1264,16 +1350,18 @@ function deleteTemplate(id) {
   persistAll({ renderNow: true, sync: true });
 }
 function renderGlobalSearch() {
-  const q = ($('searchInput')?.value || '').trim().toLowerCase();
+  const q = (($('globalSearchInput')?.value || $('searchInput')?.value || '')).trim().toLowerCase();
   const match = (arr) => !q ? [] : arr.filter(x => JSON.stringify(x).toLowerCase().includes(q));
   const rt = match(activeTasks());
   const rp = match(activeProjects({ includeArchived:true }));
   const rm = match(activeProjectMembers());
   const rd = match(activeDecisions());
   const rpr = match(activePromises());
-  return `<section class="section-head"><div><h2>Поиск по всему</h2><p>Ищет по задачам, проектам, участникам, решениям и обещаниям. Введи запрос в поле поиска сверху.</p></div></section>
-  ${!q ? '<div class="empty">Введите запрос в поле поиска</div>' : `<div class="grid-2"><section class="column"><h3>Задачи</h3>${listHtml(rt, 'Нет совпадений')}</section><section class="column"><h3>Проекты</h3>${rp.map(p => projectMiniCard(p)).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Участники</h3>${rm.map(m => `<div class="summary-card"><h4>${escapeHtml(m.name)}</h4><p>${escapeHtml(m.role)} · ${escapeHtml(projectName(m.projectId))}</p></div>`).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Решения / обещания</h3>${[...rd.map(d => `<div class="summary-card"><h4>${escapeHtml(d.title)}</h4><p>${escapeHtml(projectName(d.projectId))}</p></div>`), ...rpr.map(p => `<div class="summary-card"><h4>${escapeHtml(p.text)}</h4><p>${escapeHtml(p.who)} · ${escapeHtml(projectName(p.projectId))}</p></div>`)].join('') || '<div class="empty">Нет совпадений</div>'}</section></div>`}`;
+  return `<section class="section-head"><div><span class="view-kicker">быстрый доступ</span><h2>Поиск</h2><p>Ищет по задачам, проектам, участникам, решениям и обещаниям.</p></div></section>
+  <section class="search-command card"><input id="globalSearchInput" placeholder="Введите запрос: объект, человек, решение, задача…" value="${escapeHtml(q)}" /><button class="primary compact-primary" id="runGlobalSearchBtn" type="button">Искать</button></section>
+  ${!q ? '<div class="empty">Введите запрос для поиска</div>' : `<div class="grid-2 search-results-grid"><section class="column"><h3>Задачи <span class="muted-count">${rt.length}</span></h3>${listHtml(rt, 'Нет совпадений')}</section><section class="column"><h3>Проекты <span class="muted-count">${rp.length}</span></h3>${rp.map(p => projectMiniCard(p)).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Участники <span class="muted-count">${rm.length}</span></h3>${rm.map(m => `<div class="summary-card"><h4>${escapeHtml(m.name)}</h4><p>${escapeHtml(m.role)} · ${escapeHtml(projectName(m.projectId))}</p></div>`).join('') || '<div class="empty">Нет совпадений</div>'}</section><section class="column"><h3>Решения / обещания <span class="muted-count">${rd.length + rpr.length}</span></h3>${[...rd.map(d => `<div class="summary-card"><h4>${escapeHtml(d.title)}</h4><p>${escapeHtml(projectName(d.projectId))}</p></div>`), ...rpr.map(p => `<div class="summary-card"><h4>${escapeHtml(p.text)}</h4><p>${escapeHtml(p.who)} · ${escapeHtml(projectName(p.projectId))}</p></div>`)].join('') || '<div class="empty">Нет совпадений</div>'}</section></div>`}`;
 }
+
 function renderEveningReview() {
   const done = activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === today());
   const unfinished = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
@@ -1602,6 +1690,19 @@ function openSyncFromStats() {
   currentView = 'settings';
   render();
 }
+
+function setViewStuck(){ currentView='stuck'; render(); }
+function setViewDelegate(){ currentView='delegate'; render(); }
+function setViewNoProject(){ currentView='noproject'; render(); }
+function openProjectsQuick(){ currentView='projects'; render(); }
+function filterArchiveWeek(){ currentView='archive'; render(); }
+function exportCalendarQuick(){ exportCalendarIcs(); }
+function runGlobalSearchFromInput(){
+  const q = $('globalSearchInput')?.value || '';
+  if ($('searchInput')) $('searchInput').value = q;
+  render();
+}
+
 function bindDynamicActions() {
   document.querySelectorAll('[data-action]').forEach(btn => btn.onclick = () => {
     const id = btn.dataset.id;
@@ -1618,6 +1719,12 @@ function bindDynamicActions() {
     if (action === 'showOpenTasks') showOpenTasksSummary();
     if (action === 'showRiskSummary') showRiskSummary();
     if (action === 'openAdminDocs') openAdminDocs();
+    if (action === 'setViewStuck') setViewStuck();
+    if (action === 'setViewDelegate') setViewDelegate();
+    if (action === 'setViewNoProject') setViewNoProject();
+    if (action === 'openProjectsQuick') openProjectsQuick();
+    if (action === 'filterArchiveWeek') filterArchiveWeek();
+    if (action === 'exportCalendarQuick') exportCalendarQuick();
     if (action === 'filterTodayFromStats') filterTodayFromStats();
     if (action === 'openInboxFromStats') openInboxFromStats();
     if (action === 'openSyncFromStats') openSyncFromStats();
@@ -1658,6 +1765,8 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('addAdminUser')) $('addAdminUser').onclick = addAdminUserFromForm;
   if ($('addProjectDoc')) $('addProjectDoc').onclick = addProjectDocFromForm;
   if ($('exportIcsBtn')) $('exportIcsBtn').onclick = exportCalendarIcs;
+  if ($('runGlobalSearchBtn')) $('runGlobalSearchBtn').onclick = runGlobalSearchFromInput;
+  if ($('globalSearchInput')) $('globalSearchInput').onkeydown = (e) => { if (e.key === 'Enter') runGlobalSearchFromInput(); };
   if ($('addQuickTagBtn')) $('addQuickTagBtn').onclick = createQuickTagFromInput;
   if ($('quickTagName')) $('quickTagName').addEventListener('keydown', e => { if (e.key === 'Enter') createQuickTagFromInput(); });
   if ($('addWorkLog')) $('addWorkLog').onclick = () => addWorkLog({ date: $('workDate').value, project: $('workProject').value, hours: $('workHours').value, mark: $('workMark').value, comment: $('workComment').value });
