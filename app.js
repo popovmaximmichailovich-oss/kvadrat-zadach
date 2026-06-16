@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.1';
+const APP_VERSION = '2.3.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1114,7 +1114,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -2132,6 +2132,76 @@ function migrateLocalData() {
   runAutoArchiveCompleted({ persist: false });
   persistAll({ renderNow: false, sync: false });
 }
+
+let appUpdateReloading = false;
+
+function showUpdateBanner(title='Доступна новая версия приложения', text='Нажмите «Обновить приложение». Ссылка останется постоянной.') {
+  const banner = $('updateBanner');
+  if (!banner) return;
+  if ($('updateBannerTitle')) $('updateBannerTitle').textContent = title;
+  if ($('updateBannerText')) $('updateBannerText').textContent = text;
+  banner.classList.remove('hidden');
+  if ($('topUpdateBtn')) $('topUpdateBtn').classList.remove('hidden');
+}
+function hideUpdateBanner() {
+  if ($('updateBanner')) $('updateBanner').classList.add('hidden');
+}
+async function clearAppCaches() {
+  if (!('caches' in window)) return;
+  const keys = await caches.keys();
+  await Promise.all(keys.filter(k => k.includes('kvadrat-zadach')).map(k => caches.delete(k)));
+}
+async function updateAppNow() {
+  const btns = [$('updateAppBtn'), $('topUpdateBtn')].filter(Boolean);
+  btns.forEach(btn => { btn.disabled = true; btn.textContent = 'Обновляем…'; });
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(async reg => {
+        try { await reg.update(); } catch {}
+        if (reg.waiting) reg.waiting.postMessage({ type:'SKIP_WAITING' });
+      }));
+    }
+    await clearAppCaches();
+  } catch (e) {
+    console.warn('Update app warning:', e);
+  } finally {
+    window.location.replace(window.location.origin + window.location.pathname);
+  }
+}
+function openSyncSettings() {
+  currentView = 'settings';
+  render();
+}
+function initAppUpdateMechanism() {
+  if ($('updateAppBtn')) $('updateAppBtn').onclick = updateAppNow;
+  if ($('topUpdateBtn')) $('topUpdateBtn').onclick = updateAppNow;
+  if ($('dismissUpdateBtn')) $('dismissUpdateBtn').onclick = hideUpdateBanner;
+  if ($('topSyncBtn')) $('topSyncBtn').onclick = openSyncSettings;
+
+  if (!('serviceWorker' in navigator)) return;
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (appUpdateReloading) return;
+    appUpdateReloading = true;
+    window.location.replace(window.location.origin + window.location.pathname);
+  });
+
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const worker = reg.installing;
+      if (!worker) return;
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+          showUpdateBanner('Новая версия готова', 'Нажмите «Обновить приложение». Постоянная ссылка не изменится.');
+        }
+      });
+    });
+    reg.update().catch(console.warn);
+    setInterval(() => reg.update().catch(console.warn), 10 * 60 * 1000);
+  }).catch(console.warn);
+}
+
 function boot() {
   migrateLocalData();
   runAutoArchiveCompleted({ persist: false });
@@ -2146,7 +2216,7 @@ function boot() {
   $('deleteTaskBtn').onclick = () => { const id = $('editId').value; deleteTask(id); $('taskDialog').close(); };
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; $('installBtn').classList.remove('hidden'); });
   $('installBtn').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; $('installBtn').classList.add('hidden'); };
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.warn);
+  initAppUpdateMechanism();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) performSync({ silent: true }); });
   setInterval(() => performSync({ silent: true }), 120000);
   render();

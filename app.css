@@ -1966,3 +1966,129 @@ button.stat {
   .view-root { grid-area:main !important; }
   .mobile-actionbar { display:none !important; visibility:hidden !important; height:0 !important; overflow:hidden !important; }
 }
+
+
+
+/* v2.3.2 Layout Fix — prevent shell overlaps */
+@media (min-width: 861px) {
+  html, body { overflow-x:hidden; }
+  .app-shell {
+    width:min(1440px, calc(100vw - 36px)) !important;
+    grid-template-columns:260px minmax(0,1fr) !important;
+    grid-template-areas:
+      "topbar topbar"
+      "nav quick"
+      "nav toolbar"
+      "nav main" !important;
+    column-gap:22px !important;
+    row-gap:18px !important;
+  }
+  .app-topbar, .quick-add, .executive-toolbar, .toolbar, .view-root { min-width:0 !important; max-width:100% !important; }
+  .executive-nav, .tabs {
+    width:260px !important;
+    min-width:260px !important;
+    max-width:260px !important;
+    height:calc(100vh - 36px) !important;
+    max-height:calc(100vh - 36px) !important;
+    overflow-y:auto !important;
+    overflow-x:hidden !important;
+    flex-wrap:nowrap !important;
+    align-content:flex-start !important;
+  }
+  .executive-nav .tab, .tabs .tab {
+    max-width:100% !important;
+    min-width:0 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+  }
+  .quick-add { align-self:start !important; }
+  .quick-row { grid-template-columns:minmax(0,1fr) auto !important; }
+  .quick-input { min-width:0 !important; }
+  .executive-toolbar, .toolbar {
+    grid-template-columns:minmax(0,1fr) minmax(260px,360px) !important;
+  }
+  .stats { min-width:0 !important; }
+  .stat { min-width:0 !important; overflow:hidden !important; }
+  .stat span, .stat strong { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+}
+@media (max-width: 860px) {
+  .mobile-actionbar { display:grid !important; }
+}
+
+
+
+/* v2.3.3 update mechanism and visible sync */
+.topbar-actions {
+  gap:8px;
+}
+.top-action-btn {
+  min-height:36px;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:13px;
+  font-weight:800;
+  width:auto !important;
+}
+.update-banner {
+  grid-column:1 / -1;
+  display:flex;
+  justify-content:space-between;
+  gap:14px;
+  align-items:center;
+  padding:13px 16px;
+  border-radius:22px;
+  border:1px solid rgba(245,158,11,.34);
+  background:linear-gradient(135deg, rgba(245,158,11,.12), rgba(15,23,42,.78));
+  box-shadow:0 18px 48px rgba(0,0,0,.24);
+}
+.update-banner.hidden {
+  display:none !important;
+}
+.update-banner strong {
+  display:block;
+  color:#fed7aa;
+}
+.update-banner span {
+  display:block;
+  margin-top:3px;
+  color:var(--muted);
+  font-size:13px;
+}
+.update-banner-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.executive-nav .tab[data-view="settings"],
+.tabs .tab[data-view="settings"] {
+  order: 4 !important;
+  border-color:rgba(245,158,11,.30) !important;
+  background:rgba(245,158,11,.08) !important;
+}
+.executive-nav .tab[data-view="settings"].active,
+.tabs .tab[data-view="settings"].active {
+  background:linear-gradient(135deg,#f8fafc,#fde68a) !important;
+}
+@media (min-width:861px) {
+  .executive-nav .tab,
+  .tabs .tab { order:10; }
+  .executive-nav .nav-label,
+  .tabs .nav-label { order:0; }
+  .executive-nav .tab[data-view="commander"], .tabs .tab[data-view="commander"] { order:1; }
+  .executive-nav .tab[data-view="today"], .tabs .tab[data-view="today"] { order:2; }
+  .executive-nav .tab[data-view="pmcontrol"], .tabs .tab[data-view="pmcontrol"] { order:3; }
+  .executive-nav .tab[data-view="settings"], .tabs .tab[data-view="settings"] { order:4; }
+  .executive-nav .tab[data-view="admin"], .tabs .tab[data-view="admin"] { order:5; }
+}
+@media (max-width:860px) {
+  .update-banner {
+    flex-direction:column;
+    align-items:stretch;
+    margin:0 0 12px;
+  }
+  .update-banner-actions .compact-primary,
+  .top-action-btn {
+    width:100% !important;
+  }
+}
