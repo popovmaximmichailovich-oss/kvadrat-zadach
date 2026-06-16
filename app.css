@@ -1927,3 +1927,42 @@ button.stat {
     min-height:42px;
   }
 }
+
+
+
+/* v2.3.1 Executive Shell Fix */
+@media (min-width: 861px) {
+  .app-shell {
+    width: min(1440px, 100%) !important;
+    display:grid !important;
+    grid-template-columns:238px minmax(0,1fr) !important;
+    grid-template-areas:
+      "topbar topbar"
+      "nav quick"
+      "nav toolbar"
+      "nav main" !important;
+    gap:18px !important;
+    align-items:start !important;
+  }
+  .app-topbar { grid-area:topbar !important; }
+  .quick-add { grid-area:quick !important; margin:0 !important; }
+  .executive-nav, .tabs {
+    grid-area:nav !important;
+    display:flex !important;
+    flex-direction:column !important;
+    position:sticky !important;
+    top:18px !important;
+    overflow:visible !important;
+    max-height:calc(100vh - 36px) !important;
+  }
+  .executive-nav .tab, .tabs .tab {
+    width:100% !important;
+    max-width:none !important;
+    text-align:left !important;
+    justify-content:flex-start !important;
+    flex:0 0 auto !important;
+  }
+  .executive-toolbar, .toolbar { grid-area:toolbar !important; }
+  .view-root { grid-area:main !important; }
+  .mobile-actionbar { display:none !important; visibility:hidden !important; height:0 !important; overflow:hidden !important; }
+}

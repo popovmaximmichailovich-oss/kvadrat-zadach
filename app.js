@@ -1,4 +1,4 @@
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1114,7 +1114,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.3.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.3.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1411,7 +1411,7 @@ function saveAdminWidgets() {
 function adminInviteText() {
   return `Квадрат задач — личное пространство для управления проектами и задачами.
 
-Ссылка: https://popovmaximmichailovich-oss.github.io/kvadrat-zadach/?v=230
+Ссылка: https://popovmaximmichailovich-oss.github.io/kvadrat-zadach/?v=231
 
 Как войти:
 1. Открой ссылку.
