@@ -786,3 +786,15 @@ label small {
   .admin-hero, .admin-preset-grid, .admin-check-grid--views, .admin-check-grid--widgets, .admin-mode-steps { grid-template-columns:1fr; }
   .admin-section-head, .admin-invite-box, .admin-list-item { flex-direction:column; align-items:stretch; }
 }
+
+/* v2.2.3 auth session friendly state */
+.auth-help-box {
+  margin:10px 0;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(59,130,246,.3);
+  background:rgba(59,130,246,.08);
+  color:var(--muted);
+  font-size:13px;
+}
+.auth-help-box strong { color:#bfdbfe; }

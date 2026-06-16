@@ -1,4 +1,4 @@
-const APP_VERSION = '2.2.2';
+const APP_VERSION = '2.2.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1091,7 +1091,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.2.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.2.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1101,14 +1101,14 @@ function renderSettings() {
         <div><strong>3</strong><span>Нажмите «Отправить ссылку входа»</span></div>
         <div><strong>4</strong><span>Откройте письмо на этом устройстве и синхронизируйтесь</span></div>
       </div>
-      <p class="column-sub">Project URL и publishable key уже подставлены автоматически. Пользователю не нужно искать их в Supabase.</p>
+      <p class="column-sub">Project URL и publishable key уже подставлены автоматически. Пользователю не нужно искать их в Supabase.</p><div class="auth-help-box"><strong>Если видите ошибку входа:</strong> это значит, что текущая вкладка/Safari/PWA ещё не вошла в Supabase. Нажмите «Отправить ссылку входа» и откройте письмо именно на этом устройстве.</div>
       <div class="task-actions"><button class="ghost" id="applyDefaultSync" type="button">Восстановить автонастройку подключения</button></div>
     </section>
     <section class="sync-diagnostics card">
       <h3>Диагностика обмена между устройствами</h3>
       <div class="sync-diagnostics-grid">
         <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
-        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div><div><strong>режим:</strong> личное пространство</div>
+        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div><div><strong>режим:</strong> личное пространство</div><div><strong>вход:</strong> ${syncDiagnostics.userId ? 'выполнен' : 'нужен вход по email'}</div>
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
@@ -1693,9 +1693,19 @@ function getSupabaseClient() {
   if (!settings.supabaseUrl || !settings.supabaseAnonKey || !window.supabase) return null;
   return window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey);
 }
+function isMissingAuthSessionError(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('auth session missing') || msg.includes('session missing') || msg.includes('missing session') || msg.includes('invalid refresh token');
+}
+function friendlyAuthMessage() {
+  return 'Нужно войти в личное пространство на этом устройстве: введите email, нажмите «Сохранить настройки», затем «Отправить ссылку входа» и откройте письмо на этом же устройстве.';
+}
 async function requireSupabaseUser(client) {
   const { data: { user }, error } = await client.auth.getUser();
-  if (error || !user) throw new Error(error?.message || 'Нужен вход по email');
+  if (error || !user) {
+    if (isMissingAuthSessionError(error)) throw new Error(friendlyAuthMessage());
+    throw new Error(error?.message || friendlyAuthMessage());
+  }
   syncDiagnostics.userId = user.id || '';
   syncDiagnostics.email = user.email || settings.email || '';
   return user;
@@ -1784,7 +1794,7 @@ async function sendMagicLink() {
   const client = getSupabaseClient(); if (!client) return alert('Сначала укажи Supabase URL и publishable key.'); if (!settings.email) return alert('Укажи email.');
   const { error } = await client.auth.signInWithOtp({ email: settings.email, options: { emailRedirectTo: location.origin + location.pathname } });
   if (error) return alert(error.message);
-  alert('Ссылка входа отправлена на email. Открой её на этом устройстве.');
+  alert('Ссылка входа отправлена на email. Открой письмо на этом же устройстве, затем вернись в приложение и нажми «Проверить облако» или «Синхронизировать».');
 }
 function projectToRow(p, userId) { return { id: p.id, user_id: userId, name: p.name, code: p.code || null, status: p.status || 'active', owner: p.owner || null, customer: p.customer || null, stage: p.stage || null, start_date: p.startDate || null, due_date: p.dueDate || null, result: p.result || null, next_action: p.nextAction || null, description: p.description || null, note: p.note || null, color: p.color || null, created_at: p.createdAt, updated_at: p.updatedAt, deleted_at: p.deletedAt }; }
 function rowToProject(r) { return normalizeProject({ id: r.id, name: r.name, code: r.code || '', status: r.status || 'active', owner: r.owner || '', customer: r.customer || '', stage: r.stage || '', startDate: r.start_date || '', dueDate: r.due_date || '', result: r.result || '', nextAction: r.next_action || '', description: r.description || '', note: r.note || '', color: r.color || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
