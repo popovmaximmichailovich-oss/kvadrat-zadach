@@ -638,3 +638,151 @@ label small {
 }
 @media (max-width: 900px) { .wizard-steps { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 @media (max-width: 560px) { .wizard-steps { grid-template-columns: 1fr; } }
+
+/* v2.2.2 admin panel polish */
+.admin-title h2 { letter-spacing: -.03em; }
+.admin-hero {
+  display:grid;
+  grid-template-columns: 1.4fr repeat(4, 1fr);
+  gap:10px;
+  margin-bottom:14px;
+}
+.admin-hero > div {
+  padding:14px;
+  border-radius:18px;
+  background:rgba(15,23,42,.48);
+  border:1px solid var(--line);
+}
+.admin-hero strong { display:block; font-size:20px; color:var(--text); }
+.admin-hero span { color:var(--muted); font-size:13px; }
+.admin-section-head {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:flex-start;
+  margin-bottom:10px;
+}
+.admin-section-head h3 { margin:0 0 4px; }
+.admin-section-head p { margin:0; color:var(--muted); }
+.admin-counter {
+  flex:0 0 auto;
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(245,158,11,.12);
+  color:#fed7aa;
+  font-weight:800;
+  font-size:12px;
+}
+.admin-mode-card {
+  display:grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap:14px;
+  align-items:start;
+}
+.admin-mode-card p { color:var(--muted); margin:6px 0 0; }
+.admin-mode-steps {
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap:8px;
+}
+.admin-mode-steps span {
+  padding:10px;
+  border-radius:14px;
+  background:rgba(34,197,94,.08);
+  border:1px solid rgba(34,197,94,.25);
+  color:#bbf7d0;
+  font-weight:700;
+}
+.admin-preset-grid {
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0,1fr));
+  gap:10px;
+}
+.admin-preset-card {
+  text-align:left;
+  border:1px solid var(--line);
+  border-radius:18px;
+  background:rgba(15,23,42,.55);
+  color:var(--text);
+  padding:14px;
+  cursor:pointer;
+  min-height:110px;
+}
+.admin-preset-card strong { display:block; font-size:16px; margin-bottom:6px; }
+.admin-preset-card span { color:var(--muted); font-size:13px; line-height:1.35; }
+.admin-preset-card:hover {
+  border-color:rgba(245,158,11,.55);
+  background:rgba(245,158,11,.08);
+}
+.admin-check-grid--views { grid-template-columns: repeat(5, minmax(0,1fr)); }
+.admin-check-grid--widgets { grid-template-columns: repeat(4, minmax(0,1fr)); }
+.admin-toggle {
+  display:flex;
+  gap:9px;
+  align-items:flex-start;
+  padding:10px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  background:rgba(15,23,42,.38);
+  cursor:pointer;
+}
+.admin-toggle input { margin-top:3px; }
+.admin-toggle span { font-weight:750; }
+.admin-toggle small {
+  display:block;
+  margin-top:3px;
+  color:var(--muted);
+  font-weight:500;
+  line-height:1.25;
+}
+.admin-button-row {
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:12px;
+}
+.admin-thresholds { margin-top:14px; }
+.admin-invite-box {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  padding:12px;
+  border-radius:18px;
+  border:1px solid rgba(59,130,246,.28);
+  background:rgba(59,130,246,.07);
+  margin-bottom:12px;
+}
+.admin-invite-box p { margin:4px 0 0; color:var(--muted); }
+.admin-list {
+  display:grid;
+  gap:8px;
+  margin-top:12px;
+}
+.admin-list-item {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:16px;
+  background:rgba(15,23,42,.45);
+}
+.admin-list-item strong { display:block; }
+.admin-list-item span, .admin-list-item small {
+  display:block;
+  color:var(--muted);
+  margin-top:2px;
+}
+.admin-list-item a { color:var(--text); text-decoration:none; }
+@media (max-width: 1180px) {
+  .admin-hero { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .admin-preset-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .admin-check-grid--views, .admin-check-grid--widgets { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .admin-mode-card { grid-template-columns:1fr; }
+}
+@media (max-width: 640px) {
+  .admin-hero, .admin-preset-grid, .admin-check-grid--views, .admin-check-grid--widgets, .admin-mode-steps { grid-template-columns:1fr; }
+  .admin-section-head, .admin-invite-box, .admin-list-item { flex-direction:column; align-items:stretch; }
+}

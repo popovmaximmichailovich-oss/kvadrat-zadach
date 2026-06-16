@@ -1,4 +1,4 @@
-const APP_VERSION = '2.2.1';
+const APP_VERSION = '2.2.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1261,26 +1261,133 @@ function renderAdminPanel() {
   const widgets = defaultDashboardWidgets();
   const currentViews = settings.visibleViews || defaultVisibleViews();
   const currentWidgets = settings.dashboardWidgets || defaultDashboardWidgets();
-  return `<section class="section-head"><div><h2>Панель администратора</h2><p>Настройка видимости вкладок, руководительской панели, независимых пользователей и внешних хранилищ.</p></div></section>
-    <section class="card"><h3>Выводимые вкладки</h3><p class="column-sub">Скрытые вкладки не удаляют данные, а только убираются из верхнего меню.</p><div class="admin-check-grid">${views.map(v => `<label class="checkline"><input type="checkbox" class="admin-view-check" value="${v}" ${currentViews.includes(v) ? 'checked' : ''}/> ${escapeHtml(viewLabels[v] || v)}</label>`).join('')}</div>
-      <div class="task-actions"><button class="primary" id="saveAdminViews" type="button">Сохранить вкладки</button><button class="ghost" id="resetAdminViews" type="button">Вернуть все вкладки</button></div></section>
-    <section class="card"><h3>Виджеты руководительской панели</h3><div class="admin-check-grid">${widgets.map(w => `<label class="checkline"><input type="checkbox" class="admin-widget-check" value="${w}" ${currentWidgets.includes(w) ? 'checked' : ''}/> ${escapeHtml(widgetLabels[w] || w)}</label>`).join('')}</div>
-      <div class="settings-grid"><label>Маркер приближения срока, дней<input id="adminAlertDays" type="number" min="1" value="${settings.alertDays || 3}" /></label><label>Перегруз проекта, открытых задач<input id="adminOverloadLimit" type="number" min="1" value="${settings.projectOverloadLimit || 20}" /></label><label>Горизонт календаря, дней<input id="adminCalendarHorizon" type="number" min="7" value="${settings.calendarHorizonDays || 90}" /></label></div>
-      <div class="task-actions"><button class="primary" id="saveAdminWidgets" type="button">Сохранить панель</button></div></section>
-    <section class="card"><h3>Пользователи / независимые личные пространства</h3><p class="column-sub">Каждый пользователь работает в своём личном пространстве под своим email и user_id. Общих проектов и общей доски нет.</p>
-      <div class="project-form-grid"><label>Имя<input id="adminUserName" placeholder="ФИО" /></label><label>Email<input id="adminUserEmail" placeholder="email" /></label><label>Роль<select id="adminUserRole"><option>Руководитель</option><option>Исполнитель</option><option>Эксперт</option><option>Наблюдатель</option></select></label><label>Режим<select id="adminUserMode"><option>Личное пространство</option></select></label></div>
-      <label class="full-label">Комментарий<textarea id="adminUserNote" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addAdminUser" type="button">Добавить пользователя</button></div>
-      <div class="task-list">${activeAdminUsers().map(u => `<article class="task-card"><p class="task-title">${escapeHtml(u.name)}</p><div class="task-meta"><span class="badge">${escapeHtml(u.role)}</span><span class="badge">${escapeHtml(u.email)}</span><span class="badge">${escapeHtml(u.mode)}</span></div><p class="task-note">${escapeHtml(u.note)}</p><div class="task-actions"><button class="mini-btn" data-action="deleteAdminUser" data-id="${u.id}" type="button">Удалить</button></div></article>`).join('') || '<div class="empty">Пользователи не добавлены</div>'}</div></section>
-    <section class="card"><h3>Документы и хранилище</h3><p class="column-sub">Файлы лучше хранить в Я.Диске/Google Drive/корпоративном облаке, а здесь фиксировать ссылку, проект и назначение.</p>
-      <div class="project-form-grid"><label>Проект<input id="docProject" list="projectList" placeholder="Проект" /></label><label>Название документа<input id="docTitle" placeholder="ТЗ, письмо, протокол" /></label><label>Ссылка<input id="docUrl" placeholder="https://disk.yandex.ru/..." /></label><label>Тип<select id="docType"><option value="link">Ссылка</option><option value="folder">Папка</option><option value="doc">Документ</option></select></label></div>
-      <label class="full-label">Комментарий<textarea id="docNote" rows="2"></textarea></label><div class="task-actions"><button class="primary" id="addProjectDoc" type="button">Добавить документ</button></div>
-      <div class="task-list">${activeProjectDocs().map(d => `<article class="task-card"><p class="task-title"><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.title)}</a></p><div class="task-meta"><span class="badge">${escapeHtml(projectName(d.projectId))}</span><span class="badge">${escapeHtml(d.type)}</span></div><p class="task-note">${escapeHtml(d.note)}</p><div class="task-actions"><button class="mini-btn" data-action="deleteProjectDoc" data-id="${d.id}" type="button">Удалить</button></div></article>`).join('') || '<div class="empty">Документы не добавлены</div>'}</div></section>`;
+  const users = activeAdminUsers();
+  const docs = activeProjectDocs();
+  const presetInfo = [
+    ['leader','Руководитель','День, управление, риски, проекты, решения, табель.'],
+    ['executor','Исполнитель','Сегодня, разбор, проекты, Канбан, вечерний разбор.'],
+    ['iphone','iPhone / минимум','Только ежедневная работа без перегруза меню.'],
+    ['full','Полный режим','Показать все разделы приложения.']
+  ];
+  return `<section class="section-head admin-title"><div><h2>Панель администратора</h2><p>Настройка интерфейса, руководительской панели, личных пользователей и ссылок на документы. Здесь не создаётся общая доска: каждый пользователь работает отдельно.</p></div></section>
+    <section class="admin-hero card">
+      <div><strong>Личное пространство</strong><span>режим пользователей</span></div>
+      <div><strong>${currentViews.length}</strong><span>вкладок в меню</span></div>
+      <div><strong>${currentWidgets.length}</strong><span>виджетов панели</span></div>
+      <div><strong>${users.length}</strong><span>пользователей в справочнике</span></div>
+      <div><strong>${docs.length}</strong><span>ссылок на документы</span></div>
+    </section>
+
+    <section class="card admin-mode-card">
+      <div>
+        <h3>Как сейчас работает многопользовательский режим</h3>
+        <p>Один сайт и один Supabase-проект могут использовать несколько человек. Но каждый входит под своим email, получает свой user_id и видит только свои данные. Проекты, задачи, табель, обещания и решения не пересекаются.</p>
+      </div>
+      <div class="admin-mode-steps">
+        <span>1. Открыть ссылку</span>
+        <span>2. Ввести email</span>
+        <span>3. Получить magic link</span>
+        <span>4. Работать в своём пространстве</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="admin-section-head"><div><h3>Быстрая настройка меню</h3><p>Выбери готовый сценарий. Потом можно вручную включить или выключить отдельные вкладки.</p></div></div>
+      <div class="admin-preset-grid">${presetInfo.map(([key,title,desc]) => `<button class="admin-preset-card" data-action="adminPreset" data-preset="${key}" type="button"><strong>${title}</strong><span>${desc}</span></button>`).join('')}</div>
+    </section>
+
+    <section class="card">
+      <div class="admin-section-head">
+        <div><h3>Вкладки верхнего меню</h3><p>Скрытые вкладки не удаляют данные. Они просто не показываются пользователю.</p></div>
+        <span class="admin-counter">${currentViews.length} включено</span>
+      </div>
+      <div class="admin-check-grid admin-check-grid--views">${views.map(v => `<label class="admin-toggle"><input type="checkbox" class="admin-view-check" value="${v}" ${currentViews.includes(v) ? 'checked' : ''}/><span>${escapeHtml(viewLabels[v] || v)}</span></label>`).join('')}</div>
+      <div class="admin-button-row">
+        <button class="primary" id="saveAdminViews" type="button">Сохранить состав меню</button>
+        <button class="ghost" id="resetAdminViews" type="button">Показать всё</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="admin-section-head">
+        <div><h3>Руководительская панель «Управление»</h3><p>Выбери, какие управленческие блоки показывать: риски, сроки, динамику, документы, календарь.</p></div>
+        <span class="admin-counter">${currentWidgets.length} виджетов</span>
+      </div>
+      <div class="admin-check-grid admin-check-grid--widgets">${widgets.map(w => `<label class="admin-toggle admin-toggle--widget"><input type="checkbox" class="admin-widget-check" value="${w}" ${currentWidgets.includes(w) ? 'checked' : ''}/><span><strong>${escapeHtml(widgetLabels[w] || w)}</strong><small>${adminWidgetHint(w)}</small></span></label>`).join('')}</div>
+      <div class="settings-grid admin-thresholds">
+        <label>Предупреждать о сроке за, дней<input id="adminAlertDays" type="number" min="1" value="${settings.alertDays || 3}" /></label>
+        <label>Перегруз проекта, открытых задач<input id="adminOverloadLimit" type="number" min="1" value="${settings.projectOverloadLimit || 20}" /></label>
+        <label>Горизонт календаря, дней<input id="adminCalendarHorizon" type="number" min="7" value="${settings.calendarHorizonDays || 90}" /></label>
+      </div>
+      <div class="admin-button-row"><button class="primary" id="saveAdminWidgets" type="button">Сохранить руководительскую панель</button></div>
+    </section>
+
+    <section class="card">
+      <div class="admin-section-head"><div><h3>Пользователи / личные пространства</h3><p>Это справочник пользователей и инструкция подключения. Доступы не пересекаются: каждый работает только со своими данными.</p></div></div>
+      <div class="admin-invite-box">
+        <div><strong>Инструкция для нового пользователя</strong><p>Скопируй и отправь человеку. Ключи Supabase уже встроены в приложение, пользователю нужен только email.</p></div>
+        <button class="ghost" id="copyAdminInvite" type="button">Скопировать инструкцию</button>
+      </div>
+      <div class="project-form-grid">
+        <label>Имя<input id="adminUserName" placeholder="ФИО" /></label>
+        <label>Email<input id="adminUserEmail" placeholder="email пользователя" /></label>
+        <label>Роль<select id="adminUserRole"><option>Руководитель</option><option>Исполнитель</option><option>Эксперт</option><option>Наблюдатель</option></select></label>
+        <label>Режим<input value="Личное пространство" disabled /></label>
+      </div>
+      <label class="full-label">Комментарий<textarea id="adminUserNote" rows="2" placeholder="Например: ведёт свои задачи по объектам, не видит задачи других пользователей"></textarea></label>
+      <div class="admin-button-row"><button class="primary" id="addAdminUser" type="button">Добавить в справочник</button></div>
+      <div class="admin-list">${users.map(u => `<article class="admin-list-item"><div><strong>${escapeHtml(u.name)}</strong><span>${escapeHtml(u.role)} · ${escapeHtml(u.email || 'email не указан')}</span><small>${escapeHtml(u.note || u.mode || 'Личное пространство')}</small></div><button class="mini-btn" data-action="deleteAdminUser" data-id="${u.id}" type="button">Удалить</button></article>`).join('') || '<div class="empty">Пользователи не добавлены</div>'}</div>
+    </section>
+
+    <section class="card">
+      <div class="admin-section-head"><div><h3>Документы и внешние хранилища</h3><p>Файлы хранятся в Я.Диске, Google Drive или корпоративном облаке. В приложении фиксируется ссылка и привязка к проекту.</p></div></div>
+      <div class="project-form-grid">
+        <label>Проект<input id="docProject" list="projectList" placeholder="Проект" /></label>
+        <label>Название документа<input id="docTitle" placeholder="ТЗ, письмо, протокол, папка проекта" /></label>
+        <label>Ссылка<input id="docUrl" placeholder="https://disk.yandex.ru/..." /></label>
+        <label>Тип<select id="docType"><option value="folder">Папка проекта</option><option value="doc">Документ</option><option value="link">Ссылка</option></select></label>
+      </div>
+      <label class="full-label">Комментарий<textarea id="docNote" rows="2" placeholder="Что лежит по ссылке и для чего используется"></textarea></label>
+      <div class="admin-button-row"><button class="primary" id="addProjectDoc" type="button">Добавить ссылку</button></div>
+      <div class="admin-list">${docs.map(d => `<article class="admin-list-item"><div><strong><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.title)}</a></strong><span>${escapeHtml(projectName(d.projectId))} · ${escapeHtml(d.type)}</span><small>${escapeHtml(d.note || '')}</small></div><button class="mini-btn" data-action="deleteProjectDoc" data-id="${d.id}" type="button">Удалить</button></article>`).join('') || '<div class="empty">Документы не добавлены</div>'}</div>
+    </section>`;
+}
+function adminWidgetHint(w) {
+  const hints = {
+    health:'сводный статус проектов',
+    timeline:'сроки, вехи и прогресс',
+    alerts:'просрочка и приближение дедлайнов',
+    progress:'закрытые задачи по дням',
+    workload:'загрузка и объём задач',
+    documents:'ссылки на папки и файлы',
+    calendar:'выгрузка .ics для iPhone',
+    team:'справочник независимых пользователей'
+  };
+  return hints[w] || '';
+}
+function adminPresetViews(name) {
+  const base = ['settings','admin'];
+  const presets = {
+    leader: ['commander','today','week','pmcontrol','dashboard','inbox','stuck','delegate','noproject','kanban','projects','promises','decisions','evening','searchall','timesheet','archive','settings','admin','about'],
+    executor: ['commander','today','tomorrow','week','inbox','kanban','projects','evening','timesheet','settings','about'],
+    iphone: ['commander','today','tomorrow','inbox','projects','timesheet','settings'],
+    full: defaultVisibleViews()
+  };
+  const picked = presets[name] || presets.leader;
+  return [...new Set([...picked, ...base])];
+}
+function applyAdminPreset(name) {
+  settings.visibleViews = adminPresetViews(name);
+  saveSettings({ renderNow:true });
+  const label = name === 'leader' ? 'Руководитель' : name === 'executor' ? 'Исполнитель' : name === 'iphone' ? 'iPhone / минимум' : 'Полный режим';
+  alert(`Применён сценарий меню: ${label}`);
 }
 function saveAdminViews() {
   settings.visibleViews = [...document.querySelectorAll('.admin-view-check:checked')].map(x => x.value);
   if (!settings.visibleViews.includes('admin')) settings.visibleViews.push('admin');
   if (!settings.visibleViews.includes('settings')) settings.visibleViews.push('settings');
   saveSettings({ renderNow:true });
+  alert('Состав меню сохранён.');
 }
 function resetAdminViews() { settings.visibleViews = defaultVisibleViews(); saveSettings({ renderNow:true }); }
 function saveAdminWidgets() {
@@ -1289,11 +1396,36 @@ function saveAdminWidgets() {
   settings.projectOverloadLimit = Number($('adminOverloadLimit')?.value || 20);
   settings.calendarHorizonDays = Number($('adminCalendarHorizon')?.value || 90);
   saveSettings({ renderNow:true });
+  alert('Руководительская панель сохранена.');
+}
+function adminInviteText() {
+  return `Квадрат задач — личное пространство для управления проектами и задачами.
+
+Ссылка: https://popovmaximmichailovich-oss.github.io/kvadrat-zadach/?v=222
+
+Как войти:
+1. Открой ссылку.
+2. Перейди во вкладку «Синхр.».
+3. Введи свой email.
+4. Нажми «Сохранить настройки».
+5. Нажми «Отправить ссылку входа».
+6. Открой письмо на этом же устройстве.
+7. Вернись в приложение и нажми «Синхронизировать».
+
+Важно: каждый пользователь работает в своём личном пространстве. Другие пользователи не видят твои проекты и задачи.`;
+}
+async function copyAdminInvite() {
+  try {
+    await navigator.clipboard.writeText(adminInviteText());
+    alert('Инструкция скопирована.');
+  } catch {
+    alert(adminInviteText());
+  }
 }
 function addAdminUserFromForm() {
   const email = $('adminUserEmail')?.value.trim() || '';
   const name = $('adminUserName')?.value.trim() || email || 'Пользователь';
-  adminUsers.unshift(normalizeAdminUser({ name, email, role:$('adminUserRole')?.value || 'Исполнитель', mode:$('adminUserMode')?.value || 'Личное пространство', note:$('adminUserNote')?.value || '' }));
+  adminUsers.unshift(normalizeAdminUser({ name, email, role:$('adminUserRole')?.value || 'Исполнитель', mode:'Личное пространство', note:$('adminUserNote')?.value || '' }));
   persistAll({ renderNow:true, sync:false });
 }
 function deleteAdminUser(id) { adminUsers = adminUsers.map(u => u.id === id ? normalizeAdminUser({ ...u, deletedAt: nowISO(), updatedAt: nowISO() }) : u); persistAll({ renderNow:true, sync:false }); }
@@ -1401,6 +1533,7 @@ function bindDynamicActions() {
     if (action === 'deleteTemplate') deleteTemplate(id);
     if (action === 'deleteAdminUser') deleteAdminUser(id);
     if (action === 'deleteProjectDoc') deleteProjectDoc(id);
+    if (action === 'adminPreset') applyAdminPreset(btn.dataset.preset || 'leader');
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
@@ -1432,6 +1565,7 @@ function bindDynamicActions() {
   if ($('saveAdminViews')) $('saveAdminViews').onclick = saveAdminViews;
   if ($('resetAdminViews')) $('resetAdminViews').onclick = resetAdminViews;
   if ($('saveAdminWidgets')) $('saveAdminWidgets').onclick = saveAdminWidgets;
+  if ($('copyAdminInvite')) $('copyAdminInvite').onclick = copyAdminInvite;
   if ($('addAdminUser')) $('addAdminUser').onclick = addAdminUserFromForm;
   if ($('addProjectDoc')) $('addProjectDoc').onclick = addProjectDocFromForm;
   if ($('exportIcsBtn')) $('exportIcsBtn').onclick = exportCalendarIcs;
