@@ -1,4 +1,4 @@
-const APP_VERSION = '2.2.3';
+const APP_VERSION = '2.2.4';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -503,11 +503,18 @@ function setSyncState(text, tone='idle') {
   if (el) { el.textContent = text; el.className = `stat ${syncToneClass()}`; }
 }
 
+function taskToneClass(t) {
+  if (t.status === 'done') return 'task-tone-done';
+  if (isOverdue(t)) return 'task-tone-red';
+  if (t.dueDate && t.dueDate <= addDays(3)) return 'task-tone-yellow';
+  if (!t.projectId) return 'task-tone-blue';
+  return 'task-tone-normal';
+}
 function taskCard(t) {
   const overdue = isOverdue(t);
   const pName = projectName(t.projectId, t.project);
-  return `<article class="task-card ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
-    <p class="task-title">${escapeHtml(t.title)}</p>
+  return `<article class="task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
+    <div class="task-card-topline"><span class="task-state-dot"></span><p class="task-title">${escapeHtml(t.title)}</p></div>
     <div class="task-meta">
       <span class="badge priority-${t.priority}">${priorityLabels[t.priority] || t.priority}</span>
       <span class="badge">${statusLabels[t.status]}</span>
@@ -685,14 +692,21 @@ function projectAlerts() {
   });
   return alerts;
 }
-function renderMiniChart(values, labels=[]) {
+function renderMiniChart(values, labels=[], dates=[]) {
   const max = Math.max(1, ...values);
-  return `<div class="mini-bars">${values.map((v,i) => `<div class="mini-bar-wrap"><span>${escapeHtml(labels[i] || '')}</span><div class="mini-bar" style="height:${Math.max(6, Math.round(v/max*86))}px"></div><strong>${v}</strong></div>`).join('')}</div>`;
+  return `<div class="mini-bars chart-bars">${values.map((v,i) => `<button class="mini-bar-wrap chart-click" data-action="showDoneDay" data-date="${escapeHtml(dates[i] || '')}" type="button" title="Показать закрытые задачи за ${escapeHtml(labels[i] || '')}"><span>${escapeHtml(labels[i] || '')}</span><div class="mini-bar" style="height:${Math.max(8, Math.round(v/max*92))}px"></div><strong>${v}</strong></button>`).join('')}</div>`;
+}
+function showDoneDay(date) {
+  if (!date) return;
+  const items = activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === date);
+  const lines = items.slice(0, 8).map((t, i) => `${i+1}. ${t.title} — ${projectName(t.projectId, t.project)}`);
+  alert(`${dateLabel(date)} · закрыто задач: ${items.length}${lines.length ? '\n\n' + lines.join('\n') : ''}`);
 }
 function renderProgressDynamics() {
   const days = Array.from({length:14}, (_,i) => addDays(i-13));
   const vals = days.map(d => activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === d).length);
-  return `<section class="column"><h3>Динамика закрытия задач</h3><p class="column-sub">Закрыто по дням за 14 дней</p>${renderMiniChart(vals, days.map(d => d.slice(5)))}</section>`;
+  const total = vals.reduce((s,v) => s+v, 0);
+  return `<section class="column chart-card"><div class="column-title-row"><div><h3>Динамика закрытия задач</h3><p class="column-sub">Закрыто по дням за 14 дней. Нажми на столбец для деталей.</p></div><span class="metric-pill">${total} всего</span></div>${renderMiniChart(vals, days.map(d => d.slice(5)), days)}</section>`;
 }
 function renderGanttTimeline() {
   const ps = activeProjects().slice(0, 12);
@@ -701,18 +715,24 @@ function renderGanttTimeline() {
   const min = dates.length ? Math.min(...dates, now) : now - 7*86400000;
   const max = dates.length ? Math.max(...dates, now + 30*86400000) : now + 30*86400000;
   const span = Math.max(1, max-min);
-  return `<section class="column control-wide"><h3>График выполнения / вехи</h3><p class="column-sub">Упрощённая диаграмма сроков по проектам</p><div class="gantt">${ps.map(p => {
+  return `<section class="column control-wide gantt-card"><div class="column-title-row"><div><h3>График выполнения / вехи</h3><p class="column-sub">Сроки проектов и прогресс. Нажми на строку, чтобы открыть проект.</p></div><span class="metric-pill">${ps.length} проектов</span></div><div class="gantt">${ps.map(p => {
     const s = p.startDate ? new Date(p.startDate).getTime() : min;
     const e = p.dueDate ? new Date(p.dueDate).getTime() : max;
     const left = Math.max(0, Math.min(95, Math.round((s-min)/span*100)));
     const width = Math.max(4, Math.min(100-left, Math.round((e-s)/span*100)));
     const progress = projectProgress(p);
-    return `<div class="gantt-row ${projectColorClass(p)}"><span>${escapeHtml(p.name)}</span><div class="gantt-track"><div class="gantt-bar" style="left:${left}%;width:${width}%"><i style="width:${progress}%"></i></div></div><em>${progress}%</em></div>`;
+    const dueLeft = deadlineDistance(p.dueDate);
+    const tone = dueLeft !== null && dueLeft < 0 ? 'gantt-red' : dueLeft !== null && dueLeft <= Number(settings.alertDays || 3) ? 'gantt-yellow' : 'gantt-ok';
+    return `<button class="gantt-row ${tone} ${projectColorClass(p)}" data-action="openProjects" data-project-id="${p.id}" type="button" title="Открыть проект ${escapeHtml(p.name)}"><span class="gantt-name">${escapeHtml(p.name)}</span><div class="gantt-track"><div class="gantt-bar" style="left:${left}%;width:${width}%"><i style="width:${progress}%"></i></div></div><em>${progress}%</em><small>${p.dueDate ? dateLabel(p.dueDate) : 'без срока'}</small></button>`;
   }).join('') || '<div class="empty">Проекты со сроками не заданы</div>'}</div></section>`;
 }
 function renderAlertsPanel() {
   const alerts = projectAlerts();
-  return `<section class="column"><h3>Маркеры и уведомления</h3><p class="column-sub">Что выпадает из контроля</p>${alerts.slice(0,12).map(a => `<div class="alert-line alert-${a.level}"><strong>${escapeHtml(a.project?.name || 'Без проекта')}</strong><span>${escapeHtml(a.text)}</span></div>`).join('') || '<div class="empty">Критичных маркеров нет</div>'}</section>`;
+  return `<section class="column alert-card"><div class="column-title-row"><div><h3>Маркеры и уведомления</h3><p class="column-sub">Что выпадает из контроля. Нажми строку, чтобы перейти к задаче или проекту.</p></div><span class="metric-pill">${alerts.length}</span></div>${alerts.slice(0,12).map(a => {
+    const action = a.task ? 'edit' : 'openProjects';
+    const attr = a.task ? `data-id="${a.task.id}"` : `data-project-id="${a.project?.id || ''}"`;
+    return `<button class="alert-line alert-${a.level}" data-action="${action}" ${attr} type="button"><strong>${escapeHtml(a.project?.name || 'Без проекта')}</strong><span>${escapeHtml(a.text)}</span></button>`;
+  }).join('') || '<div class="empty">Критичных маркеров нет</div>'}</section>`;
 }
 function renderDocumentsPanel(projectId='') {
   const docs = activeProjectDocs(projectId);
@@ -725,13 +745,15 @@ function renderCalendarPanel() {
     ...activeTasks().filter(t => t.status !== 'done' && t.dueDate && t.dueDate <= until),
     ...activeProjects().filter(p => p.dueDate && p.dueDate <= until).map(p => ({ title:`Веха проекта: ${p.name}`, dueDate:p.dueDate, projectId:p.id, note:p.nextAction || p.result || '' }))
   ];
-  return `<section class="column"><h3>Календарь iPhone</h3><p class="column-sub">Экспорт контрольных сроков и задач в .ics</p><div class="metric-row"><span><strong>${events.length}</strong> событий на ${horizon} дн.</span></div><div class="task-actions"><button class="mini-btn" id="exportIcsBtn" type="button">Скачать календарь .ics</button></div></section>`;
+  return `<section class="column calendar-card"><div class="column-title-row"><div><h3>Календарь iPhone</h3><p class="column-sub">Экспорт контрольных сроков и задач в .ics</p></div><span class="metric-pill">${horizon} дн.</span></div><div class="calendar-metric"><strong>${events.length}</strong><span>событий попадёт в календарь</span></div><div class="task-actions"><button class="primary compact-primary" id="exportIcsBtn" type="button">Скачать календарь .ics</button></div></section>`;
 }
 function renderPmControl() {
   const widgets = settings.dashboardWidgets || defaultDashboardWidgets();
   const blocks = [];
-  blocks.push(`<section class="section-head"><div><h2>Управление проектами</h2><p>Руководительская панель: динамика, сроки, вехи, риски, документы и календарь.</p></div></section>`);
-  blocks.push(`<div class="dashboard-hero card"><div><strong>${activeProjects().length}</strong><span>проектов</span></div><div><strong>${activeTasks().filter(t=>t.status!=='done').length}</strong><span>открытых задач</span></div><div><strong>${projectAlerts().length}</strong><span>маркеров риска</span></div><div><strong>${activeProjectDocs().length}</strong><span>документов</span></div></div>`);
+  const openTasks = activeTasks().filter(t=>t.status!=='done').length;
+  const alertsCount = projectAlerts().length;
+  blocks.push(`<section class="section-head view-hero"><div><span class="view-kicker">центр управления</span><h2>Управление проектами</h2><p>Динамика, сроки, вехи, риски, документы и календарь в одном управленческом экране.</p></div></section>`);
+  blocks.push(`<div class="dashboard-hero executive-hero card"><button data-action="adminPreset" data-preset="leader" type="button"><strong>${activeProjects().length}</strong><span>проектов</span></button><button data-action="showOpenTasks" type="button"><strong>${openTasks}</strong><span>открытых задач</span></button><button data-action="showRiskSummary" type="button" class="${alertsCount ? 'metric-risk' : 'metric-ok'}"><strong>${alertsCount}</strong><span>маркеров риска</span></button><button data-action="openAdminDocs" type="button"><strong>${activeProjectDocs().length}</strong><span>документов</span></button></div>`);
   blocks.push('<div class="control-grid">');
   if (widgets.includes('timeline')) blocks.push(renderGanttTimeline());
   if (widgets.includes('alerts')) blocks.push(renderAlertsPanel());
@@ -1091,7 +1113,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.2.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.2.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1401,7 +1423,7 @@ function saveAdminWidgets() {
 function adminInviteText() {
   return `Квадрат задач — личное пространство для управления проектами и задачами.
 
-Ссылка: https://popovmaximmichailovich-oss.github.io/kvadrat-zadach/?v=222
+Ссылка: https://popovmaximmichailovich-oss.github.io/kvadrat-zadach/?v=224
 
 Как войти:
 1. Открой ссылку.
@@ -1522,6 +1544,25 @@ function saveEdit(e) {
   });
   $('taskDialog').close();
 }
+
+function showOpenTasksSummary() {
+  const open = activeTasks().filter(t => t.status !== 'done');
+  const overdue = open.filter(isOverdue);
+  alert(`Открытых задач: ${open.length}\nПросрочено: ${overdue.length}\nБез проекта: ${open.filter(t => !t.projectId).length}`);
+}
+function showRiskSummary() {
+  const alerts = projectAlerts();
+  const lines = alerts.slice(0, 8).map((a,i) => `${i+1}. ${a.project?.name || 'Без проекта'} — ${a.text}`);
+  alert(`Маркеров риска: ${alerts.length}${lines.length ? '\n\n' + lines.join('\n') : ''}`);
+}
+function openAdminDocs() {
+  currentView = 'admin';
+  render();
+  setTimeout(() => {
+    const el = [...document.querySelectorAll('.card h3')].find(x => x.textContent.includes('Документы'));
+    if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+  }, 60);
+}
 function bindDynamicActions() {
   document.querySelectorAll('[data-action]').forEach(btn => btn.onclick = () => {
     const id = btn.dataset.id;
@@ -1534,6 +1575,10 @@ function bindDynamicActions() {
     if (action === 'deleteAdminUser') deleteAdminUser(id);
     if (action === 'deleteProjectDoc') deleteProjectDoc(id);
     if (action === 'adminPreset') applyAdminPreset(btn.dataset.preset || 'leader');
+    if (action === 'showDoneDay') showDoneDay(btn.dataset.date || '');
+    if (action === 'showOpenTasks') showOpenTasksSummary();
+    if (action === 'showRiskSummary') showRiskSummary();
+    if (action === 'openAdminDocs') openAdminDocs();
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'today') updateTask(id, { planDate: today(), status: 'planned' });
