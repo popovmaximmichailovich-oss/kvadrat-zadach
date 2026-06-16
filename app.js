@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.2';
+const APP_VERSION = '2.7.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1235,7 +1235,7 @@ function renderTimesheet() {
 function renderSettings() {
   return `<section class="settings-panel card">
     <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.7.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.7.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     <section class="setup-wizard card">
       <h3>Быстрый старт для нового пользователя</h3>
@@ -1263,6 +1263,7 @@ function renderSettings() {
         <button class="ghost" id="pullCloud" type="button">Загрузить из облака</button>
         <button class="ghost" id="pushCloud" type="button">Выгрузить в облако</button>
         <button class="danger" id="logoutCloud" type="button">Выйти из облака</button>
+        <button class="ghost" id="runSelfCheck" type="button">Самопроверка</button>
       </div>
     </section>
     <div class="notice profile-empty-note"><strong>Профиль заполняется пользователем.</strong> Эти данные не подставляются заранее и хранятся в личном пространстве текущего email.</div>
@@ -1290,7 +1291,7 @@ function renderSettings() {
     </div>
     <div class="settings-grid">
       <label>Ваш email для личного пространства <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" /></label>
-      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost" id="signOut" type="button">Выйти</button></div>
+      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost" id="refreshAuthBtn" type="button">Проверить вход</button></div>
     </div>
     <div class="settings-grid">
       <button class="ghost" id="exportBackup" type="button">Резервная копия всех данных</button>
@@ -1660,15 +1661,58 @@ async function logoutCloud() {
   setSyncState('выход выполнен · нужен вход по email', 'warn');
   render();
 }
+
+async function signOut() {
+  return logoutCloud();
+}
+
+function runAppSelfCheck() {
+  const savedView = currentView;
+  const errors = [];
+  const checks = [];
+  const mark = (name, ok, detail='') => { checks.push(`${ok ? '✓' : '✗'} ${name}${detail ? ': ' + detail : ''}`); if (!ok) errors.push(name + (detail ? ': ' + detail : '')); };
+  try {
+    localStorage.setItem('kvadrat-zadach-selftest', 'ok');
+    mark('localStorage', localStorage.getItem('kvadrat-zadach-selftest') === 'ok');
+    localStorage.removeItem('kvadrat-zadach-selftest');
+  } catch (e) { mark('localStorage', false, e.message); }
+  try { mark('основные данные', Array.isArray(tasks) && Array.isArray(projects) && Array.isArray(workLogs)); } catch (e) { mark('основные данные', false, e.message); }
+  try { mark('профиль пользователя', settings && typeof settings === 'object'); } catch (e) { mark('профиль пользователя', false, e.message); }
+  try { mark('Supabase настройки', Boolean(settings.supabaseUrl && settings.supabaseAnonKey), settings.email ? settings.email : 'email может быть пустым до входа'); } catch (e) { mark('Supabase настройки', false, e.message); }
+  const views = [...new Set((typeof userVisibleViews === 'function' ? userVisibleViews() : defaultVisibleViews()).filter(v => v !== 'admin'))];
+  for (const v of views) {
+    try {
+      currentView = v;
+      render();
+      const html = $('viewRoot')?.innerHTML || '';
+      mark(`экран ${viewLabels[v] || v}`, html.length > 20, `${html.length} символов`);
+    } catch (e) { mark(`экран ${viewLabels[v] || v}`, false, e.message); }
+  }
+  try { currentView = savedView; render(); } catch (e) { console.warn('restore view after self-check failed', e); }
+  syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+  if (errors.length) {
+    syncDiagnostics.lastError = errors.slice(0,3).join('; ');
+    setSyncState(`самопроверка: есть ошибки (${errors.length})`, 'bad');
+  } else {
+    syncDiagnostics.lastError = '';
+    setSyncState(`самопроверка: успешно · ${checks.length} проверок`, 'ok');
+  }
+  alert(`Самопроверка приложения\n\n${checks.join('\n')}`);
+  render();
+}
 function bindSyncPanelButtons() {
   const checkBtn = $('checkCloud');
   const pullBtn = $('pullCloud');
   const pushBtn = $('pushCloud');
   const logoutBtn = $('logoutCloud');
+  const selfCheckBtn = $('runSelfCheck');
+  const legacySignOutBtn = $('signOut');
   if (checkBtn) checkBtn.onclick = (e) => { e.preventDefault(); checkCloudConnection(); };
   if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
   if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
+  if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
+  if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
 function openEdit(id) {
   const t = tasks.find(x => x.id === id);
@@ -1852,7 +1896,7 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
   if ($('syncNow')) $('syncNow').onclick = () => performSync({ silent: false });
   bindSyncPanelButtons();
-  if ($('signOut')) $('signOut').onclick = signOut;
+  if ($('refreshAuthBtn')) $('refreshAuthBtn').onclick = () => refreshAuthState({ renderNow:true });
   if ($('copyWeeklyReport')) $('copyWeeklyReport').onclick = async () => { await navigator.clipboard.writeText(weeklyReportText()); alert('Отчёт скопирован.'); };
   if ($('downloadWeeklyReport')) $('downloadWeeklyReport').onclick = () => downloadText(`weekly-report-${today()}.txt`, weeklyReportText(), 'text/plain;charset=utf-8');
   if ($('exportBackup')) $('exportBackup').onclick = exportBackup;

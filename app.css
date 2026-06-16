@@ -2802,3 +2802,15 @@ button.stat {
     width:100% !important;
   }
 }
+
+
+
+/* v2.7.3 Quality Check */
+.render-error-card {
+  border-color: rgba(239,68,68,.42) !important;
+  background: rgba(239,68,68,.10) !important;
+}
+.sync-actions #runSelfCheck {
+  border-color: rgba(59,130,246,.28);
+  background: rgba(59,130,246,.08);
+}

@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-7-2-auth-status-home';
+const CACHE = 'kvadrat-zadach-v2-7-3-quality-check';
 const ASSETS = [
   './',
   './index.html',
