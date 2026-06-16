@@ -17,20 +17,20 @@
   <div class="app-shell">
     <header class="topbar app-topbar">
       <div class="brand-block">
-        <p class="eyebrow">Личное пространство руководителя проекта</p>
+        <p class="eyebrow">Executive project workspace</p>
         <h1>Квадрат задач</h1>
-        <p class="brand-subtitle">Проекты · задачи · сроки · документы · табель</p>
+        <p class="brand-subtitle">Операционный центр: день, проекты, риски, сроки, документы</p>
       </div>
       <div class="topbar-actions">
-        <span class="mode-pill">v2.2.4 · личное пространство</span>
+        <span class="mode-pill">v2.3.0 · Executive Shell</span>
         <button id="installBtn" class="ghost hidden" type="button">Установить</button>
       </div>
     </header>
 
     <section class="quick-add card">
       <div class="quick-row">
-        <input id="quickTitle" class="quick-input" autocomplete="off" placeholder="Записать задачу одной строкой…" />
-        <button id="quickAddBtn" class="primary" type="button">Добавить</button>
+        <input id="quickTitle" class="quick-input" autocomplete="off" placeholder="Что нужно сделать? Запишите задачу одной строкой…" />
+        <button id="quickAddBtn" class="primary" type="button">Создать задачу</button>
       </div>
       <div id="quickTagBar" class="tag-bar" aria-label="Быстрые теги проектов"></div>
       <details id="advancedDetails" class="advanced">
@@ -91,7 +91,7 @@
       </details>
     </section>
 
-    <nav class="tabs" aria-label="Разделы приложения">
+    <nav class="tabs executive-nav" aria-label="Разделы приложения"><span class="nav-label">Навигация</span>
       <button class="tab active" data-view="commander" type="button">День</button>
       <button class="tab" data-view="today" type="button">Сегодня</button>
       <button class="tab" data-view="tomorrow" type="button">Завтра</button>
@@ -118,7 +118,9 @@
       <button class="tab" data-view="about" type="button">О приложении</button>
     </nav>
 
-    <section class="toolbar card">
+    <section class="mobile-actionbar" aria-label="Быстрая мобильная навигация"><button class="mobile-nav-btn" data-mobile-view="commander" type="button">День</button><button class="mobile-nav-btn" data-mobile-view="today" type="button">Сегодня</button><button class="mobile-nav-btn" data-mobile-view="inbox" type="button">Разбор</button><button class="mobile-nav-btn" data-mobile-view="projects" type="button">Проекты</button><button class="mobile-nav-btn" data-mobile-view="settings" type="button">Синхр.</button></section>
+
+    <section class="toolbar card executive-toolbar">
       <div class="stats" id="stats"></div>
       <div class="filters">
         <input id="searchInput" placeholder="Поиск" />

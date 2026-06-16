@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-2-4-visual-redesign';
+const CACHE = 'kvadrat-zadach-v2-3-0-executive-shell';
 const ASSETS = [
   './',
   './index.html',
