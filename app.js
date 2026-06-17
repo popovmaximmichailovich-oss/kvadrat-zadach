@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.3';
+const APP_VERSION = '2.9.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -9,6 +9,8 @@ const TEMPLATES_KEY = 'eisenhower_templates_v1';
 const DOCS_KEY = 'eisenhower_project_docs_v1';
 const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
+const SYNC_META_KEY = 'kvadrat_zadach_sync_meta_v1';
+const DEVICE_ID_KEY = 'kvadrat_zadach_device_id_v1';
 const DEFAULT_SUPABASE_URL = 'https://bgoplepnfzprnagandsw.supabase.co';
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_96Juj1RHnPzgZS_ZF1OxWA_0LCjE61o';
 const PERSONAL_MODE_TEXT = 'Личное пространство: другие пользователи не видят ваши проекты и задачи.';
@@ -40,6 +42,7 @@ let supabaseClientKey = '';
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '' };
+let syncMeta = loadSyncMeta();
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -50,6 +53,156 @@ const addDays = (n) => {
 };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 const nowISO = () => new Date().toISOString();
+
+
+function safeJsonParse(value, fallback) {
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = 'dev-' + uid();
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+function deviceKind() {
+  const ua = navigator.userAgent || '';
+  const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+  if (/iPhone|iPad|iPod/i.test(ua)) return standalone ? 'iPhone / PWA' : 'iPhone / Safari';
+  if (/Android/i.test(ua)) return standalone ? 'Android / PWA' : 'Android / браузер';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
+  if (/Windows/i.test(ua)) return 'Windows';
+  return 'Браузер';
+}
+function deviceName() {
+  return `${deviceKind()} · ${navigator.language || 'ru-RU'}`;
+}
+function loadSyncMeta() {
+  const base = {
+    deviceId: '',
+    deviceName: '',
+    pendingChanges: 0,
+    lastLocalChangeAt: '',
+    lastSyncAt: '',
+    lastPushAt: '',
+    lastPullAt: '',
+    lastCheckAt: '',
+    lastDeviceCheckAt: '',
+    lastSuccessfulAuthAt: '',
+    lastMode: 'local',
+    journal: []
+  };
+  const loaded = safeJsonParse(localStorage.getItem(SYNC_META_KEY) || '{}', {});
+  const meta = { ...base, ...loaded };
+  meta.deviceId = meta.deviceId || getDeviceId();
+  meta.deviceName = meta.deviceName || deviceName();
+  meta.journal = Array.isArray(meta.journal) ? meta.journal.slice(0, 80) : [];
+  return meta;
+}
+function saveSyncMeta() {
+  syncMeta.deviceId = syncMeta.deviceId || getDeviceId();
+  syncMeta.deviceName = deviceName();
+  localStorage.setItem(SYNC_META_KEY, JSON.stringify(syncMeta));
+}
+function recordSyncEvent(type, text, tone='idle') {
+  syncMeta.deviceId = syncMeta.deviceId || getDeviceId();
+  syncMeta.deviceName = deviceName();
+  const event = { id: uid(), at: nowISO(), type, tone, text, deviceId: syncMeta.deviceId, deviceName: syncMeta.deviceName, email: settings.email || syncDiagnostics.email || '' };
+  syncMeta.journal = [event, ...(syncMeta.journal || [])].slice(0, 80);
+  if (type === 'check') syncMeta.lastCheckAt = event.at;
+  if (type === 'push') syncMeta.lastPushAt = event.at;
+  if (type === 'pull') syncMeta.lastPullAt = event.at;
+  if (type === 'sync') syncMeta.lastSyncAt = event.at;
+  if (type === 'auth') syncMeta.lastSuccessfulAuthAt = event.at;
+  if (type === 'device') syncMeta.lastDeviceCheckAt = event.at;
+  saveSyncMeta();
+}
+function markPendingChange(reason='изменение данных') {
+  syncMeta.pendingChanges = Number(syncMeta.pendingChanges || 0) + 1;
+  syncMeta.lastLocalChangeAt = nowISO();
+  syncMeta.lastMode = syncDiagnostics.userId ? 'pending' : 'local';
+  recordSyncEvent('local', reason, syncDiagnostics.userId ? 'warn' : 'bad');
+}
+function clearPendingChanges(reason='синхронизация выполнена') {
+  syncMeta.pendingChanges = 0;
+  syncMeta.lastMode = syncDiagnostics.userId ? 'cloud' : 'local';
+  recordSyncEvent('sync', reason, 'ok');
+}
+function syncConfidenceStatus() {
+  const signed = Boolean(syncDiagnostics.userId);
+  const pending = Number(syncMeta.pendingChanges || 0);
+  if (!signed) return { tone:'warn', title:'Локальный режим', text:'Вход не выполнен. Данные сохраняются на этом устройстве, но пока не попадают в облако.' };
+  if (pending > 0) return { tone:'warn', title:'Есть несинхронизированные изменения', text:`Ожидают отправки: ${pending}. Нажмите «Выгрузить в облако» или дождитесь автосинхронизации.` };
+  if (syncMeta.lastSyncAt || syncMeta.lastPushAt || syncMeta.lastPullAt) return { tone:'ok', title:'Облако активно', text:'Это устройство подключено к личному пространству. Данные синхронизированы или готовы к синхронизации.' };
+  return { tone:'warn', title:'Вход выполнен, облако не проверено', text:'Проверьте облако, чтобы убедиться, что устройство видит личное пространство.' };
+}
+function shortDateTime(iso) {
+  if (!iso) return 'не было';
+  try { return new Date(iso).toLocaleString('ru-RU'); } catch { return iso; }
+}
+function renderLocalModeWarning() {
+  const s = syncConfidenceStatus();
+  if (s.tone === 'ok') return '';
+  return `<section class="local-mode-warning card sync-${s.tone}"><strong>${escapeHtml(s.title)}</strong><p>${escapeHtml(s.text)}</p><button class="primary compact-primary" data-action="openSyncFromStats" type="button">Настроить синхронизацию</button></section>`;
+}
+function renderDeviceStatusPanel() {
+  const s = syncConfidenceStatus();
+  return `<section class="device-status-panel card sync-${s.tone}">
+    <div class="device-status-head">
+      <div><span class="view-kicker">это устройство</span><h3>${escapeHtml(deviceKind())}</h3><p>${escapeHtml(s.text)}</p></div>
+      <span class="device-login-status ${s.tone === 'ok' ? 'ok' : 'warn'}">${escapeHtml(s.title)}</span>
+    </div>
+    <div class="device-status-grid">
+      <div><strong>device_id</strong><span>${escapeHtml((syncMeta.deviceId || getDeviceId()).slice(0,18))}</span></div>
+      <div><strong>email</strong><span>${escapeHtml(syncDiagnostics.email || settings.email || 'не указан')}</span></div>
+      <div><strong>вход</strong><span>${syncDiagnostics.userId ? 'выполнен' : 'не выполнен'}</span></div>
+      <div><strong>ожидает выгрузки</strong><span>${Number(syncMeta.pendingChanges || 0)}</span></div>
+      <div><strong>последняя синхронизация</strong><span>${escapeHtml(shortDateTime(syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt))}</span></div>
+      <div><strong>последнее изменение</strong><span>${escapeHtml(shortDateTime(syncMeta.lastLocalChangeAt))}</span></div>
+    </div>
+    <div class="task-actions sync-actions">
+      <button class="primary" id="checkDeviceBtn" type="button">Проверить это устройство</button>
+      <button class="ghost" id="exportSyncLog" type="button">Скачать журнал</button>
+      <button class="ghost" id="clearSyncLog" type="button">Очистить журнал</button>
+    </div>
+  </section>`;
+}
+function renderSyncJournal(limit=8) {
+  const items = (syncMeta.journal || []).slice(0, limit);
+  return `<section class="sync-journal card"><div class="column-title-row"><div><h3>Журнал синхронизации</h3><p class="column-sub">Последние события этого устройства. Без технических терминов.</p></div><span class="metric-pill">${(syncMeta.journal || []).length}</span></div>
+    <div class="sync-journal-list">${items.map(e => `<div class="sync-journal-row ${e.tone || 'idle'}"><strong>${escapeHtml(e.text)}</strong><span>${escapeHtml(shortDateTime(e.at))} · ${escapeHtml(e.deviceName || deviceKind())}</span></div>`).join('') || '<div class="empty">Журнал пока пуст</div>'}</div>
+  </section>`;
+}
+function checkThisDevice() {
+  syncMeta.lastDeviceCheckAt = nowISO();
+  recordSyncEvent('device', syncDiagnostics.userId ? 'устройство подключено и готово к синхронизации' : 'устройство работает локально — нужен вход по email', syncDiagnostics.userId ? 'ok' : 'warn');
+  setSyncState(syncDiagnostics.userId ? 'устройство подключено' : 'локальный режим · нужен вход', syncDiagnostics.userId ? 'ok' : 'warn');
+  render();
+}
+function exportSyncLog() {
+  const payload = {
+    appVersion: APP_VERSION,
+    exportedAt: nowISO(),
+    deviceId: syncMeta.deviceId || getDeviceId(),
+    deviceName: deviceName(),
+    email: syncDiagnostics.email || settings.email || '',
+    userId: syncDiagnostics.userId || '',
+    pendingChanges: Number(syncMeta.pendingChanges || 0),
+    lastSyncAt: syncMeta.lastSyncAt,
+    lastPushAt: syncMeta.lastPushAt,
+    lastPullAt: syncMeta.lastPullAt,
+    lastCheckAt: syncMeta.lastCheckAt,
+    journal: syncMeta.journal || []
+  };
+  downloadText(`kvadrat-sync-log-${today()}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+}
+function clearSyncLog() {
+  syncMeta.journal = [];
+  saveSyncMeta();
+  setSyncState('журнал синхронизации очищен', 'ok');
+  render();
+}
 
 function loadArray(key) {
   try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
@@ -117,6 +270,7 @@ function persistAll({ renderNow = true, sync = false } = {}) {
   localStorage.setItem(DOCS_KEY, JSON.stringify(projectDocs));
   localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify(adminUsers));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (sync) markPendingChange('локальное изменение ожидает синхронизации');
   if (renderNow) render();
   if (sync) scheduleAutoSync();
 }
@@ -516,21 +670,27 @@ function taskToneClass(t) {
 function taskCard(t) {
   const overdue = isOverdue(t);
   const pName = projectName(t.projectId, t.project);
+  const statusText = statusLabels[t.status] || t.status;
+  const priorityText = priorityLabels[t.priority] || t.priority;
   const mainAction = t.status !== 'done'
     ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>`
     : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
-  return `<article class="task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
-    <div class="task-card-topline"><span class="task-state-dot"></span><p class="task-title">${escapeHtml(t.title)}</p></div>
-    <div class="task-meta">
-      <span class="badge priority-${t.priority}">${priorityLabels[t.priority] || t.priority}</span>
-      <span class="badge">${statusLabels[t.status]}</span>
-      <span class="badge">${escapeHtml(pName)}</span>
-      ${t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок: ${dateLabel(t.dueDate)}</span>` : ''}
+  return `<article class="task-card ux-card ux-task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
+    <div class="ux-card-head">
+      <div class="ux-title-wrap">
+        <span class="task-state-dot ux-dot"></span>
+        <div><p class="task-title ux-card-title">${escapeHtml(t.title)}</p><small>${escapeHtml(pName)}</small></div>
+      </div>
+      <span class="ux-status ${overdue ? 'ux-status-danger' : t.status === 'doing' ? 'ux-status-work' : ''}">${escapeHtml(statusText)}</span>
+    </div>
+    <div class="ux-card-meta">
+      <span class="badge priority-${t.priority}">${escapeHtml(priorityText)}</span>
+      ${t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок: ${dateLabel(t.dueDate)}</span>` : '<span class="badge muted-badge">без срока</span>'}
       ${t.planDate ? `<span class="badge">план: ${dateLabel(t.planDate)}</span>` : ''}
       ${t.dayBucket !== 'none' ? `<span class="badge">${bucketLabels[t.dayBucket]}</span>` : ''}
     </div>
-    ${t.note ? `<p class="task-note">${escapeHtml(t.note)}</p>` : ''}
-    <div class="task-actions task-actions-compact">
+    ${t.note ? `<p class="task-note ux-card-note">${escapeHtml(t.note)}</p>` : ''}
+    <div class="task-actions task-actions-compact ux-card-actions">
       ${mainAction}
       <button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button>
       ${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}
@@ -539,7 +699,6 @@ function taskCard(t) {
     </div>
   </article>`;
 }
-
 function listHtml(list, emptyText = 'Задач нет') {
   const items = sortTasks(list);
   if (!items.length) return `<div class="empty">${emptyText}</div>`;
@@ -663,14 +822,18 @@ function projectMetrics(projectId) {
 function projectMiniCard(p, index=0) {
   const m = projectMetrics(p.id);
   const h = projectHealth(p.id);
-  return `<article class="dashboard-card ${projectColorClass(p)} health-${h.tone}">
-    <div class="project-title-row"><h3><span class="color-dot"></span>${escapeHtml(p.name)}</h3><span class="badge">${projectStatusLabels[p.status] || p.status}</span></div>
-    <div class="metric-row"><span><strong>${m.open}</strong> открыто</span><span><strong>${m.overdue}</strong> просрочено</span><span><strong>${m.doneWeek}</strong> сделано за неделю</span><span><strong>${m.hoursMonth}</strong> ч/мес</span></div>
-    <p class="task-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)} · ${escapeHtml(p.nextAction || p.stage || p.description || 'нет следующего действия')}</p>
-    <div class="task-actions"><button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Паспорт</button></div>
+  const progress = projectProgress(p);
+  return `<article class="dashboard-card ux-card ux-project-card ${projectColorClass(p)} health-${h.tone}">
+    <div class="ux-card-head">
+      <div class="ux-title-wrap"><span class="color-dot"></span><div><h3 class="ux-card-title">${escapeHtml(p.name)}</h3><small>${escapeHtml(p.stage || p.owner || 'проект')}</small></div></div>
+      <span class="ux-status">${projectStatusLabels[p.status] || p.status}</span>
+    </div>
+    <div class="ux-progress"><i style="width:${progress}%"></i></div>
+    <div class="metric-row ux-metrics"><span><strong>${m.open}</strong> открыто</span><span><strong>${m.overdue}</strong> просрочено</span><span><strong>${m.doneWeek}</strong> за неделю</span><span><strong>${m.hoursMonth}</strong> ч/мес</span></div>
+    <p class="task-note ux-card-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)} · ${escapeHtml(p.nextAction || p.stage || p.description || 'нет следующего действия')}</p>
+    <div class="task-actions ux-card-actions"><button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button><button class="mini-btn" data-action="openProjects" data-project-id="${p.id}" type="button">Паспорт</button></div>
   </article>`;
 }
-
 function projectProgress(p) {
   const m = projectMetrics(p.id);
   const total = m.open + m.done;
@@ -697,6 +860,49 @@ function projectAlerts() {
   });
   return alerts;
 }
+
+function showAnalyticsDetail(kind, key='') {
+  const label = String(key || '');
+  if (kind === 'progress') return showDoneDay(label);
+  if (kind === 'risk') {
+    const alerts = projectAlerts();
+    const items = alerts.filter(a => !label || a.level === label);
+    const lines = items.slice(0,8).map((a,i) => `${i+1}. ${a.project?.name || 'Без проекта'} — ${a.text}`);
+    return alert(`Риски: ${label || 'все'} · ${items.length}${lines.length ? '\n\n' + lines.join('\n') : ''}`);
+  }
+  if (kind === 'status') {
+    const items = activeTasks().filter(t => t.status === label);
+    const lines = items.slice(0,8).map((t,i) => `${i+1}. ${t.title} — ${projectName(t.projectId,t.project)}`);
+    return alert(`${statusLabels[label] || label} · задач: ${items.length}${lines.length ? '\n\n' + lines.join('\n') : ''}`);
+  }
+  if (kind === 'workload') {
+    const p = projectById(label);
+    if (p) { currentView = 'projects'; render(); setTimeout(() => { const el = document.querySelector(`[data-project-id-card="${p.id}"]`); if (el) el.scrollIntoView({ behavior:'smooth', block:'start' }); }, 60); }
+  }
+}
+function renderUxBarChart({ title, subtitle, items, action, maxValue }) {
+  const max = Math.max(1, Number(maxValue || 0), ...items.map(x => Number(x.value || 0)));
+  return `<section class="column ux-chart-card"><div class="column-title-row"><div><h3>${escapeHtml(title)}</h3><p class="column-sub">${escapeHtml(subtitle || '')}</p></div><span class="metric-pill">${items.reduce((s,x)=>s+Number(x.value||0),0)}</span></div>
+    <div class="ux-chart-list">${items.map(x => `<button class="ux-chart-row" data-action="showAnalyticsDetail" data-kind="${escapeHtml(action)}" data-key="${escapeHtml(x.key || x.label || '')}" type="button"><span>${escapeHtml(x.label)}</span><b>${Number(x.value || 0)}</b><i style="width:${Math.max(4, Math.round(Number(x.value || 0)/max*100))}%"></i></button>`).join('') || '<div class="empty">Данных пока нет</div>'}</div>
+  </section>`;
+}
+function renderInteractiveAnalytics() {
+  const all = activeTasks();
+  const open = all.filter(t => t.status !== 'done');
+  const statusItems = ['inbox','planned','doing','delegated','deferred'].map(s => ({ key:s, label:statusLabels[s] || s, value:open.filter(t => t.status === s).length })).filter(x => x.value > 0);
+  const riskItems = ['red','orange','yellow'].map(level => ({ key:level, label:level === 'red' ? 'Критично' : level === 'orange' ? 'Внимание' : 'Скоро срок', value:projectAlerts().filter(a => a.level === level).length })).filter(x => x.value > 0);
+  const workload = activeProjects().map(p => ({ key:p.id, label:p.name, value:projectMetrics(p.id).open })).filter(x => x.value > 0).sort((a,b)=>b.value-a.value).slice(0,8);
+  const days = Array.from({length:10}, (_,i) => addDays(i-9));
+  const progressItems = days.map(d => ({ key:d, label:d.slice(5), value:activeTasks().filter(t => t.status === 'done' && t.doneAt && t.doneAt.slice(0,10) === d).length }));
+  return `<section class="section-head analytics-head"><div><span class="view-kicker">интерактивная аналитика</span><h2>Графики управления</h2><p>Сроки, прогресс, риски, динамика и нагрузка. Нажатие на строку открывает детализацию.</p></div></section>
+  <div class="analytics-grid">
+    ${renderUxBarChart({ title:'Статусы задач', subtitle:'Открытые задачи по состояниям', items:statusItems, action:'status' })}
+    ${renderUxBarChart({ title:'Риски', subtitle:'Активные маркеры риска', items:riskItems, action:'risk' })}
+    ${renderUxBarChart({ title:'Нагрузка', subtitle:'Открытые задачи по проектам', items:workload, action:'workload' })}
+    ${renderUxBarChart({ title:'Динамика', subtitle:'Закрытые задачи за последние 10 дней', items:progressItems, action:'progress' })}
+  </div>`;
+}
+
 function renderMiniChart(values, labels=[], dates=[]) {
   const max = Math.max(1, ...values);
   return `<div class="mini-bars chart-bars">${values.map((v,i) => `<button class="mini-bar-wrap chart-click" data-action="showDoneDay" data-date="${escapeHtml(dates[i] || '')}" type="button" title="Показать закрытые задачи за ${escapeHtml(labels[i] || '')}"><span>${escapeHtml(labels[i] || '')}</span><div class="mini-bar" style="height:${Math.max(8, Math.round(v/max*92))}px"></div><strong>${v}</strong></button>`).join('')}</div>`;
@@ -736,16 +942,15 @@ function renderAlertsPanel() {
   return `<section class="column alert-card"><div class="column-title-row"><div><h3>Маркеры и уведомления</h3><p class="column-sub">Что выпадает из контроля. Нажми строку, чтобы перейти к задаче или проекту.</p></div><span class="metric-pill">${alerts.length}</span></div>${alerts.slice(0,12).map(a => {
     const action = a.task ? 'edit' : 'openProjects';
     const attr = a.task ? `data-id="${a.task.id}"` : `data-project-id="${a.project?.id || ''}"`;
-    return `<button class="alert-line alert-${a.level}" data-action="${action}" ${attr} type="button"><strong>${escapeHtml(a.project?.name || 'Без проекта')}</strong><span>${escapeHtml(a.text)}</span></button>`;
+    return `<button class="alert-line ux-risk-card alert-${a.level}" data-action="${action}" ${attr} type="button"><strong>${escapeHtml(a.project?.name || 'Без проекта')}</strong><span>${escapeHtml(a.text)}</span></button>`;
   }).join('') || '<div class="empty">Критичных маркеров нет</div>'}</section>`;
 }
 function renderDocumentsPanel(projectId='') {
   const docs = activeProjectDocs(projectId);
-  return `<section class="column documents-panel"><div class="column-title-row"><div><h3>Документы / хранилище</h3><p class="column-sub">Ссылки на Я.Диск, Google Drive, папки проекта, ТЗ, письма.</p></div><span class="metric-pill">${docs.length}</span></div>
-    <div class="doc-list">${docs.slice(0,10).map(d => `<a class="doc-link doc-link-rich" href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(d.title)}</strong><span>${escapeHtml(projectName(d.projectId))} · ${escapeHtml(d.type || 'ссылка')}</span><small>${escapeHtml(d.note || '')}</small></a>`).join('') || '<div class="empty">Документы не добавлены. Добавить ссылки можно в административном режиме.</div>'}</div>
+  return `<section class="column documents-panel ux-doc-panel"><div class="column-title-row"><div><h3>Документы / хранилище</h3><p class="column-sub">Ссылки на Я.Диск, Google Drive, папки проекта, ТЗ, письма.</p></div><span class="metric-pill">${docs.length}</span></div>
+    <div class="doc-list ux-doc-list">${docs.slice(0,10).map(d => `<a class="doc-link doc-link-rich ux-card ux-doc-card" href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><div class="ux-card-head"><div class="ux-title-wrap"><span class="doc-icon">↗</span><div><strong class="ux-card-title">${escapeHtml(d.title)}</strong><small>${escapeHtml(projectName(d.projectId))}</small></div></div><span class="ux-status">${escapeHtml(d.type || 'ссылка')}</span></div>${d.note ? `<p class="ux-card-note">${escapeHtml(d.note)}</p>` : ''}</a>`).join('') || '<div class="empty">Документы не добавлены. Добавить ссылки можно в административном режиме.</div>'}</div>
   </section>`;
 }
-
 function renderCalendarPanel() {
   const horizon = Number(settings.calendarHorizonDays || 90);
   const until = addDays(horizon);
@@ -788,6 +993,7 @@ function renderPmControl() {
     <button data-action="openAdminDocs" type="button"><strong>${docsCount}</strong><span>документов</span></button>
     <button data-action="exportCalendarQuick" type="button"><strong>${Number(settings.calendarHorizonDays || 90)}</strong><span>дней в календарь</span></button>
   </div>`);
+  blocks.push(renderInteractiveAnalytics());
   blocks.push('<div class="control-grid">');
   if (widgets.includes('timeline')) blocks.push(renderGanttTimeline());
   if (widgets.includes('alerts')) blocks.push(renderAlertsPanel());
@@ -952,26 +1158,23 @@ function renderFocusStrip(todays, overdue, stuck, delegate, noProject) {
 
 function renderHomeAuthStatusCard() {
   const signedIn = Boolean(syncDiagnostics.userId);
-  const tone = signedIn ? 'ok' : 'warn';
-  const title = signedIn ? 'Вход выполнен' : 'Нужен вход по email';
-  const userText = signedIn
-    ? `${escapeHtml(syncDiagnostics.email || settings.email || 'email не указан')} · user ${escapeHtml(syncDiagnostics.userId.slice(0,8))}`
-    : `${escapeHtml(settings.email || 'email не указан')} · личное пространство не подключено к облаку`;
+  const status = syncConfidenceStatus();
   const cloudText = syncDiagnostics.remoteTasks === null || syncDiagnostics.remoteTasks === undefined
     ? 'облако не проверено'
     : `${syncDiagnostics.remoteTasks} задач в облаке`;
-  const lastText = syncDiagnostics.lastCheckedAt ? `проверка: ${escapeHtml(syncDiagnostics.lastCheckedAt)}` : 'проверки ещё не было';
-  return `<section class="home-auth-card card auth-${tone}">
+  const lastText = syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt ? `синхронизация: ${escapeHtml(shortDateTime(syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt))}` : 'синхронизации ещё не было';
+  return `<section class="home-auth-card card auth-${status.tone}">
     <div class="home-auth-main">
       <span class="auth-dot"></span>
       <div>
-        <strong>${title}</strong>
-        <p>${userText}</p>
+        <strong>${escapeHtml(status.title)}</strong>
+        <p>${signedIn ? `${escapeHtml(syncDiagnostics.email || settings.email || 'email не указан')} · user ${escapeHtml(syncDiagnostics.userId.slice(0,8))}` : `${escapeHtml(settings.email || 'email не указан')} · это устройство работает локально`}</p>
       </div>
     </div>
     <div class="home-auth-meta">
       <span>${escapeHtml(cloudText)}</span>
-      <span>${escapeHtml(lastText)}</span>
+      <span>${lastText}</span>
+      <span>ожидает выгрузки: ${Number(syncMeta.pendingChanges || 0)}</span>
     </div>
     <div class="home-auth-actions">
       <button class="${signedIn ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${signedIn ? 'Открыть синхронизацию' : 'Войти / синхронизировать'}</button>
@@ -991,6 +1194,7 @@ function renderCommander() {
   const next = todays.find(t => t.dayBucket === 'one') || todays.find(t => t.priority === 'A') || overdue[0] || stuck[0] || todays[0];
   return `<section class="section-head executive-day-head"><div><span class="view-kicker">операционный центр</span><h2>День</h2><p>Главный экран руководителя: фокус, риски, задачи на сегодня и проекты, которые требуют внимания.</p></div></section>
   ${renderHomeAuthStatusCard()}
+  ${renderLocalModeWarning()}
   ${renderFocusStrip(todays, overdue, stuck, delegate, noProject)}
   ${todayOverloadNotice(todays)}
   <section class="day-focus-card card">
@@ -1104,20 +1308,26 @@ function renderProjects() {
   const cards = activeProjects({ includeArchived: true }).map(p => {
     const items = list.filter(t => t.projectId === p.id);
     const m = projectMetrics(p.id);
-    return `<section class="column project-card ${p.status === 'archived' ? 'project-muted' : ''} ${projectColorClass(p)}" data-project-id-card="${p.id}">
-      <div class="project-title-row"><h3><span class="color-dot"></span>${escapeHtml(p.name)}</h3><span class="badge">${projectStatusLabels[p.status] || p.status}</span></div>
-      <p class="project-count">${m.open} открытых · ${m.overdue} просрочено · ${m.hoursMonth} ч за ${monthTitle(ym)} · ${m.members} участн.</p>
-      ${p.description ? `<p class="task-note">${escapeHtml(p.description)}</p>` : ''}
-      <div class="task-actions">
-        <button class="mini-btn" data-action="quickLogProject" data-project-id="${p.id}" type="button">Отметить сегодня</button>
-        <button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Показать задачи</button>
+    const h = projectHealth(p.id);
+    const progress = projectProgress(p);
+    return `<section class="column project-card ux-card ux-project-card ${p.status === 'archived' ? 'project-muted' : ''} ${projectColorClass(p)} health-${h.tone}" data-project-id-card="${p.id}">
+      <div class="ux-card-head">
+        <div class="ux-title-wrap"><span class="color-dot"></span><div><h3 class="ux-card-title">${escapeHtml(p.name)}</h3><small>${escapeHtml(p.stage || p.owner || 'проект')}</small></div></div>
+        <span class="ux-status">${projectStatusLabels[p.status] || p.status}</span>
+      </div>
+      <div class="ux-progress"><i style="width:${progress}%"></i></div>
+      <div class="metric-row ux-metrics"><span><strong>${m.open}</strong> открыто</span><span><strong>${m.overdue}</strong> просрочено</span><span><strong>${m.hoursMonth}</strong> ч за ${monthTitle(ym)}</span><span><strong>${m.members}</strong> участн.</span></div>
+      <p class="task-note ux-card-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)}${p.description ? ' · ' + escapeHtml(p.description) : ''}</p>
+      <div class="task-actions ux-card-actions">
+        <button class="mini-btn primary-mini" data-action="quickLogProject" data-project-id="${p.id}" type="button">Отметить сегодня</button>
+        <button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button>
         <button class="mini-btn" data-action="archiveProject" data-project-id="${p.id}" type="button">${p.status === 'archived' ? 'Активировать' : 'В архив'}</button>
       </div>
       ${renderProjectPassport(p)}
-      ${listHtml(items, 'Открытых задач нет')}
+      <div class="ux-card-list">${listHtml(items, 'Открытых задач нет')}</div>
     </section>`;
   }).join('');
-  return `<section class="section-head"><div><h2>Проекты</h2><p>Карточка проекта теперь содержит паспорт, цветовую метку, участников и роли.</p></div></section>
+  return `<section class="section-head"><div><h2>Проекты</h2><p>Единая карточка проекта: статус, прогресс, риски, задачи, паспорт и быстрые действия.</p></div></section>
     <section class="card project-form-card">
       <h3>Создать проект</h3>
       <div class="project-form-grid">
@@ -1136,7 +1346,7 @@ function renderProjects() {
       <label class="full-label">Комментарий<textarea id="newProjectNote" rows="2" placeholder="Риски, вводные, особенности"></textarea></label>
       <div class="task-actions"><button class="primary" id="createProjectBtn" type="button">Создать проект</button></div>
     </section>
-    <div class="grid-2">${cards || '<div class="empty">Проектов пока нет</div>'}</div>`;
+    <div class="grid-2 ux-card-grid">${cards || '<div class="empty">Проектов пока нет</div>'}</div>`;
 }
 function renderArchive() {
   const list = visibleTasks().filter(t => t.status === 'done');
@@ -1212,7 +1422,7 @@ function renderTimesheet() {
   const list = activeProjects();
   return `<section class="timesheet-panel card">
     <div><h2>Табель и отметки по проектам</h2><p>Отмечаешь часы по проекту. Приложение собирает табель и свод по каждому проекту.</p></div>
-    <div class="notice">Автосинхронизация включена: после изменений приложение само отправляет данные в Supabase, если выполнен вход.</div>
+    <div class="notice">Автосинхронизация включена: после изменений приложение само отправляет данные в облако, если выполнен вход.</div>
     <div class="timesheet-entry">
       <label>Дата <input id="workDate" type="date" value="${today()}" /></label>
       <label>Проект <input id="workProject" list="projectList" value="${escapeHtml(list[0]?.name || '')}" placeholder="Проект" /></label>
@@ -1233,28 +1443,54 @@ function renderTimesheet() {
   </section>`;
 }
 function renderSettings() {
-  return `<section class="settings-panel card">
-    <div><h2>Синхронизация, профиль и резервные копии</h2><p>Приложение работает в режиме независимого личного пространства. Каждый пользователь входит под своим email и видит только свои данные.</p></div>
-    <div class="notice"><strong>Версия 2.7.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+  const signedIn = Boolean(syncDiagnostics.userId);
+  return `<section class="settings-panel card user-sync-screen">
+    <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
+    <div class="notice"><strong>Версия 2.9.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
-    <section class="setup-wizard card">
-      <h3>Быстрый старт для нового пользователя</h3>
-      <div class="wizard-steps">
-        <div><strong>1</strong><span>Введите свой email</span></div>
-        <div><strong>2</strong><span>Нажмите «Сохранить настройки»</span></div>
-        <div><strong>3</strong><span>Нажмите «Отправить ссылку входа»</span></div>
-        <div><strong>4</strong><span>Откройте письмо на этом устройстве и синхронизируйтесь</span></div>
+    ${renderDeviceStatusPanel()}
+
+    <section class="device-login-card card">
+      <div class="device-login-head">
+        <div>
+          <span class="view-kicker">вход на устройстве</span>
+          <h3>${signedIn ? 'Это устройство подключено' : 'Подключить это устройство'}</h3>
+          <p>${signedIn ? 'Сессия активна. Можно синхронизировать данные.' : 'Для iPhone используйте код из письма: он вводится прямо в приложении и не зависит от того, где открылось письмо.'}</p>
+        </div>
+        <span class="device-login-status ${signedIn ? 'ok' : 'warn'}">${signedIn ? 'вход выполнен' : 'нужен вход'}</span>
       </div>
-      <p class="column-sub">Project URL и publishable key уже подставлены автоматически. Пользователю не нужно искать их в Supabase.</p><div class="auth-help-box"><strong>Если видите ошибку входа:</strong> это значит, что текущая вкладка/Safari/PWA ещё не вошла в Supabase. Нажмите «Отправить ссылку входа» и откройте письмо именно на этом устройстве.</div>
-      <div class="task-actions"><button class="ghost" id="applyDefaultSync" type="button">Восстановить автонастройку подключения</button></div>
+
+      <div class="email-code-grid">
+        <label>Email личного пространства
+          <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" inputmode="email" autocomplete="email" />
+        </label>
+        <label>Код из письма
+          <input id="emailOtpCode" value="" placeholder="6 цифр из письма" inputmode="numeric" autocomplete="one-time-code" maxlength="12" />
+        </label>
+      </div>
+
+      <div class="task-actions sync-actions">
+        <button class="primary" id="sendEmailCode" type="button">Получить код на почту</button>
+        <button class="primary" id="verifyEmailCode" type="button">Войти по коду</button>
+        <button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button>
+        <button class="ghost" id="refreshAuthBtn" type="button">Проверить вход</button>
+      </div>
+
+      <div class="auth-help-box iphone-help">
+        <strong>Для iPhone:</strong> откройте приложение именно там, где будете работать — Safari или иконка на экране «Домой». Получите код на email, вернитесь в это же приложение, введите код и нажмите «Войти по коду».
+      </div>
     </section>
+
     <section class="sync-diagnostics card">
-      <h3>Диагностика обмена между устройствами</h3>
+      <h3>Состояние синхронизации</h3>
       <div class="sync-diagnostics-grid">
+        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div>
+        <div><strong>вход:</strong> ${syncDiagnostics.userId ? 'выполнен' : 'нужен вход по email'}</div>
         <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
-        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div><div><strong>режим:</strong> личное пространство</div><div><strong>вход:</strong> ${syncDiagnostics.userId ? 'выполнен' : 'нужен вход по email'}</div>
+        <div><strong>режим:</strong> личное пространство</div>
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
+        <div><strong>несинхронизировано:</strong> ${Number(syncMeta.pendingChanges || 0)}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
         ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
       </div>
@@ -1266,6 +1502,12 @@ function renderSettings() {
         <button class="ghost" id="runSelfCheck" type="button">Самопроверка</button>
       </div>
     </section>
+
+    ${renderSyncJournal(10)}
+
+    <input id="syncUrl" type="hidden" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || DEFAULT_SUPABASE_URL))}" />
+    <input id="syncKey" type="hidden" value="${escapeHtml(settings.supabaseAnonKey || DEFAULT_SUPABASE_PUBLISHABLE_KEY)}" />
+
     <div class="notice profile-empty-note"><strong>Профиль заполняется пользователем.</strong> Эти данные не подставляются заранее и хранятся в личном пространстве текущего email.</div>
 <section class="admin-mode-note card">
       <h3>Административный режим</h3>
@@ -1285,19 +1527,11 @@ function renderSettings() {
       <label class="checkline"><input id="profileAutoSync" type="checkbox" ${settings.autoSync ? 'checked' : ''}/> Автосинхронизация</label>
       <div class="task-actions" style="align-items:end"><button class="primary" id="saveProfile" type="button">Сохранить профиль</button><button class="ghost" id="resetProfileFields" type="button">Очистить профиль</button></div>
     </div>
-    <div class="settings-grid">
-      <label>Supabase Project URL <small>заполнено автоматически</small><input id="syncUrl" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || ''))}" placeholder="https://xxxx.supabase.co" /></label>
-      <label>Supabase publishable key <small>заполнено автоматически</small><input id="syncKey" value="${escapeHtml(settings.supabaseAnonKey || '')}" placeholder="sb_publishable_..." /></label>
-    </div>
-    <div class="settings-grid">
-      <label>Ваш email для личного пространства <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" /></label>
-      <div class="task-actions" style="align-items:end"><button class="primary" id="saveSyncSettings" type="button">Сохранить настройки</button><button class="ghost" id="sendMagicLink" type="button">Отправить ссылку входа</button><button class="ghost" id="syncNow" type="button">Синхронизировать</button><button class="ghost" id="refreshAuthBtn" type="button">Проверить вход</button></div>
-    </div>
+
     <div class="settings-grid">
       <button class="ghost" id="exportBackup" type="button">Резервная копия всех данных</button>
       <label class="ghost" style="text-align:center; cursor:pointer">Восстановить из JSON<input id="importJson" type="file" accept="application/json" style="display:none" /></label>
     </div>
-    <div><h3>SQL для Supabase</h3><p>Для версии 1.5 выполни SQL из файла <code>supabase.sql</code> или вставь текст ниже в Supabase → SQL Editor → Run.</p><pre class="sql-box">${escapeHtml(SQL_TEMPLATE)}</pre></div>
   </section>`;
 }
 function renderAbout() {
@@ -1309,7 +1543,7 @@ function renderAbout() {
       <div class="summary-card"><h4>3. Проекты</h4><p>Создай проект в разделе «Проекты». Дальше задачи и табель привязываются к нему как к отдельной сущности.</p></div>
       <div class="summary-card"><h4>4. Канбан</h4><p>Канбан показывает не хаос карточек, а статус → проект → задачи-ссылки. Нажатие открывает задачу.</p></div>
       <div class="summary-card"><h4>5. Табель</h4><p>Отмечай часы по проектам. Табель можно вывести по всем проектам или по конкретному проекту.</p></div>
-      <div class="summary-card"><h4>6. Синхронизация</h4><p>После входа через Supabase данные синхронизируются автоматически. Каждый пользователь видит только свои данные по email/user_id.</p></div>
+      <div class="summary-card"><h4>6. Синхронизация</h4><p>После входа данные синхронизируются автоматически. Каждый пользователь видит только своё личное пространство.</p></div>
     </div>
     <div class="notice">Резервная копия: вкладка «Синхронизация» → «Резервная копия всех данных». В версии 2.2.1 есть личное пространство пользователя, управленческая панель, админ-настройка вкладок, календарь .ics, документы-ссылки, дашборд проектов, паспорта проектов, недельный отчёт и автоархив.</div>
   </section>`;
@@ -1658,6 +1892,7 @@ async function logoutCloud() {
   syncDiagnostics.email = settings.email || '';
   syncDiagnostics.remoteTasks = null;
   syncDiagnostics.lastError = '';
+  recordSyncEvent('auth', 'выход из облака на этом устройстве', 'warn');
   setSyncState('выход выполнен · нужен вход по email', 'warn');
   render();
 }
@@ -1678,7 +1913,16 @@ function runAppSelfCheck() {
   } catch (e) { mark('localStorage', false, e.message); }
   try { mark('основные данные', Array.isArray(tasks) && Array.isArray(projects) && Array.isArray(workLogs)); } catch (e) { mark('основные данные', false, e.message); }
   try { mark('профиль пользователя', settings && typeof settings === 'object'); } catch (e) { mark('профиль пользователя', false, e.message); }
-  try { mark('Supabase настройки', Boolean(settings.supabaseUrl && settings.supabaseAnonKey), settings.email ? settings.email : 'email может быть пустым до входа'); } catch (e) { mark('Supabase настройки', false, e.message); }
+  try { mark('облачное подключение', Boolean(settings.supabaseUrl && settings.supabaseAnonKey), settings.email ? settings.email : 'email может быть пустым до входа'); } catch (e) { mark('облачное подключение', false, e.message); }
+  try { mark('статус синхронизации', typeof syncConfidenceStatus === 'function' && Boolean(syncConfidenceStatus().title), syncConfidenceStatus().title); } catch (e) { mark('статус синхронизации', false, e.message); }
+  try { mark('устройство', Boolean(syncMeta.deviceId || getDeviceId()), deviceKind()); } catch (e) { mark('устройство', false, e.message); }
+  try {
+    const actions = [...document.querySelectorAll('[data-action]')].map(x => x.dataset.action).filter(Boolean);
+    mark('активные кнопки', actions.length >= 1, `${actions.length} обработчиков на текущем экране`);
+  } catch (e) { mark('активные кнопки', false, e.message); }
+  try {
+    mark('мобильное нижнее меню', document.querySelectorAll('[data-mobile-view]').length >= 5, `${document.querySelectorAll('[data-mobile-view]').length} кнопок`);
+  } catch (e) { mark('мобильное нижнее меню', false, e.message); }
   const views = [...new Set((typeof userVisibleViews === 'function' ? userVisibleViews() : defaultVisibleViews()).filter(v => v !== 'admin'))];
   for (const v of views) {
     try {
@@ -1711,6 +1955,9 @@ function bindSyncPanelButtons() {
   if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
   if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
+  if ($('checkDeviceBtn')) $('checkDeviceBtn').onclick = (e) => { e.preventDefault(); checkThisDevice(); };
+  if ($('exportSyncLog')) $('exportSyncLog').onclick = (e) => { e.preventDefault(); exportSyncLog(); };
+  if ($('clearSyncLog')) $('clearSyncLog').onclick = (e) => { e.preventDefault(); clearSyncLog(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
@@ -1809,6 +2056,7 @@ function bindDynamicActions() {
     if (action === 'deleteProjectDoc') deleteProjectDoc(id);
     if (action === 'adminPreset') applyAdminPreset(btn.dataset.preset || 'leader');
     if (action === 'showDoneDay') showDoneDay(btn.dataset.date || '');
+    if (action === 'showAnalyticsDetail') showAnalyticsDetail(btn.dataset.kind || '', btn.dataset.key || '');
     if (action === 'showOpenTasks') showOpenTasksSummary();
     if (action === 'showRiskSummary') showRiskSummary();
     if (action === 'openAdminDocs') openAdminDocs();
@@ -1891,7 +2139,9 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('enableAdminMode')) $('enableAdminMode').onclick = enableAdminMode;
   if ($('disableAdminMode')) $('disableAdminMode').onclick = disableAdminMode;
   if ($('backToDayFromAdmin')) $('backToDayFromAdmin').onclick = () => { currentView = 'commander'; render(); };
-  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail').value.trim(); saveSettings({ renderNow: false }); alert('Настройки сохранены.'); refreshAuthState({ renderNow:true }); };
+  if ($('saveSyncSettings')) $('saveSyncSettings').onclick = () => { settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL); settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY; settings.email = $('syncEmail')?.value.trim() || settings.email; saveSettings({ renderNow: false }); alert('Настройки сохранены.'); refreshAuthState({ renderNow:true }); };
+  if ($('sendEmailCode')) $('sendEmailCode').onclick = sendEmailCode;
+  if ($('verifyEmailCode')) $('verifyEmailCode').onclick = verifyEmailCode;
   if ($('sendMagicLink')) $('sendMagicLink').onclick = sendMagicLink;
   if ($('applyDefaultSync')) $('applyDefaultSync').onclick = () => applyDefaultPersonalSyncSettings({ renderNow:true });
   if ($('syncNow')) $('syncNow').onclick = () => performSync({ silent: false });
@@ -2116,7 +2366,7 @@ async function safeSelect(client, table, mapper) {
 }
 async function checkCloudConnection() {
   const client = getSupabaseClient();
-  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  if (!client) return alert('Облачное подключение временно недоступно.');
   setSyncState('проверка облака...', 'warn');
   try {
     const user = await requireSupabaseUser(client);
@@ -2125,17 +2375,20 @@ async function checkCloudConnection() {
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastError = '';
+    syncMeta.lastCheckAt = nowISO();
+    recordSyncEvent('check', `облако доступно · задач: ${cloudTasks}`, 'ok');
     setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${cloudTasks}`, 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
+    recordSyncEvent('check', isAuthNeededError(e) ? 'проверка облака: нужен вход' : 'ошибка проверки облака: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка проверки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
 }
 async function pullFromCloud() {
   const client = getSupabaseClient();
-  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  if (!client) return alert('Облачное подключение временно недоступно.');
   setSyncState('загрузка из облака...', 'warn');
   syncDiagnostics.lastError = '';
   try {
@@ -2151,10 +2404,13 @@ async function pullFromCloud() {
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    syncMeta.lastPullAt = nowISO();
+    recordSyncEvent('pull', `загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     setSyncState(`загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
+    recordSyncEvent('pull', isAuthNeededError(e) ? 'загрузка из облака: нужен вход' : 'ошибка загрузки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка загрузки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
@@ -2170,12 +2426,12 @@ function scheduleAutoSync(delay = 1600) {
   autoSyncTimer = setTimeout(() => performSync({ silent: true }), delay);
 }
 async function sendMagicLink() {
-  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl').value.trim() || DEFAULT_SUPABASE_URL);
-  settings.supabaseAnonKey = $('syncKey').value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
-  settings.email = $('syncEmail').value.trim();
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
+  settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  settings.email = $('syncEmail')?.value.trim() || settings.email;
   saveSettings({ renderNow:false });
   const client = getSupabaseClient();
-  if (!client) return alert('Сначала укажи Supabase URL и publishable key.');
+  if (!client) return alert('Облачное подключение временно недоступно.');
   if (!settings.email) return alert('Укажи email.');
   const redirectTo = getAuthRedirectUrl();
   const { error } = await client.auth.signInWithOtp({
@@ -2183,9 +2439,50 @@ async function sendMagicLink() {
     options: { emailRedirectTo: redirectTo, shouldCreateUser: true }
   });
   if (error) return alert(error.message);
-  setSyncState('ссылка входа отправлена на email', 'warn');
+  setSyncState('письмо для входа отправлено', 'warn');
   render();
-  alert('Ссылка входа отправлена. Откройте письмо на этом же устройстве. После возврата приложение само восстановит вход; затем нажмите «Проверить облако».');
+  alert('Письмо отправлено. На iPhone удобнее использовать код из письма: введите его в поле «Код из письма» и нажмите «Войти по коду».');
+}
+async function sendEmailCode() {
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
+  settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  settings.email = $('syncEmail')?.value.trim() || settings.email;
+  saveSettings({ renderNow:false });
+  const client = getSupabaseClient();
+  if (!client) return alert('Облачное подключение временно недоступно.');
+  if (!settings.email) return alert('Укажите email личного пространства.');
+  const { error } = await client.auth.signInWithOtp({
+    email: settings.email,
+    options: { shouldCreateUser: true, emailRedirectTo: getAuthRedirectUrl() }
+  });
+  if (error) return alert(error.message);
+  setSyncState('код отправлен на email', 'warn');
+  render();
+  alert('Код отправлен на email. Введите код из письма в этом же приложении и нажмите «Войти по коду».');
+}
+async function verifyEmailCode() {
+  settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
+  settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  settings.email = $('syncEmail')?.value.trim() || settings.email;
+  const token = ($('emailOtpCode')?.value || '').trim().replace(/\s+/g, '');
+  saveSettings({ renderNow:false });
+  const client = getSupabaseClient();
+  if (!client) return alert('Облачное подключение временно недоступно.');
+  if (!settings.email) return alert('Укажите email личного пространства.');
+  if (!token) return alert('Введите код из письма.');
+  const { data, error } = await client.auth.verifyOtp({ email: settings.email, token, type: 'email' });
+  if (error) return alert(error.message);
+  const user = data?.user || data?.session?.user;
+  if (user) {
+    syncDiagnostics.userId = user.id || '';
+    syncDiagnostics.email = user.email || settings.email || '';
+  }
+  syncDiagnostics.lastError = '';
+  recordSyncEvent('auth', `вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
+  setSyncState(`вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
+  await refreshAuthState({ renderNow:false });
+  render();
+  alert('Вход выполнен. Это устройство подключено к вашему личному пространству.');
 }
 function projectToRow(p, userId) { return { id: p.id, user_id: userId, name: p.name, code: p.code || null, status: p.status || 'active', owner: p.owner || null, customer: p.customer || null, stage: p.stage || null, start_date: p.startDate || null, due_date: p.dueDate || null, result: p.result || null, next_action: p.nextAction || null, description: p.description || null, note: p.note || null, color: p.color || null, created_at: p.createdAt, updated_at: p.updatedAt, deleted_at: p.deletedAt }; }
 function rowToProject(r) { return normalizeProject({ id: r.id, name: r.name, code: r.code || '', status: r.status || 'active', owner: r.owner || '', customer: r.customer || '', stage: r.stage || '', startDate: r.start_date || '', dueDate: r.due_date || '', result: r.result || '', nextAction: r.next_action || '', description: r.description || '', note: r.note || '', color: r.color || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
@@ -2204,7 +2501,7 @@ function rowToWorkLog(r) { return normalizeWorkLog({ id: r.id, date: r.work_date
 async function performSync({ silent = false, mode = 'full' } = {}) {
   if (syncInProgress) return false;
   const client = getSupabaseClient();
-  if (!client) { if (!silent) alert('Сначала укажи Supabase URL и publishable key.'); return false; }
+  if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
   syncInProgress = true;
   syncDiagnostics.lastError = '';
   setSyncState(mode === 'push' ? 'выгрузка в облако...' : 'синхронизация...', 'warn');
@@ -2233,6 +2530,11 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    syncMeta.lastSyncAt = nowISO();
+    if (mode === 'push') syncMeta.lastPushAt = syncMeta.lastSyncAt;
+    if (mode !== 'push') syncMeta.lastPullAt = syncMeta.lastSyncAt;
+    syncMeta.pendingChanges = 0;
+    recordSyncEvent(mode === 'push' ? 'push' : 'sync', `${mode === 'push' ? 'выгружено в облако' : 'синхронизировано'} · задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     const warning = syncDiagnostics.lastError ? ` · предупреждение: ${syncDiagnostics.lastError}` : '';
     setSyncState(`${mode === 'push' ? 'выгружено' : 'синхронизировано'} ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}${warning}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     render();
@@ -2240,6 +2542,7 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
   } catch (e) {
     console.warn(e);
     syncDiagnostics.lastError = e.message;
+    recordSyncEvent('sync', isAuthNeededError(e) ? 'синхронизация: нужен вход' : 'ошибка синхронизации: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     if (isAuthNeededError(e)) {
       setSyncState('нужен вход по email', 'warn');
       if (!silent) alert(friendlyAuthMessage());
@@ -2254,212 +2557,8 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
   }
 }
 
-const SQL_TEMPLATE = `create table if not exists public.projects (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  name text not null,
-  code text,
-  status text not null default 'active' check (status in ('active','paused','archived')),
-  owner text,
-  customer text,
-  stage text,
-  start_date date,
-  due_date date,
-  result text,
-  next_action text,
-  description text,
-  note text,
-  color text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
+const CLOUD_SCHEMA_READY = true;
 
-alter table public.projects add column if not exists customer text;
-alter table public.projects add column if not exists stage text;
-alter table public.projects add column if not exists start_date date;
-alter table public.projects add column if not exists due_date date;
-alter table public.projects add column if not exists result text;
-alter table public.projects add column if not exists next_action text;
-alter table public.projects add column if not exists color text;
-
-create table if not exists public.tasks (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  title text not null,
-  project_id uuid references public.projects(id) on delete set null,
-  project text,
-  due_date date,
-  plan_date date,
-  status text not null default 'inbox' check (status in ('inbox','planned','doing','delegated','deferred','done')),
-  priority text not null default 'C' check (priority in ('A','B','C','D','E')),
-  importance text not null default 'low' check (importance in ('high','low')),
-  urgency text not null default 'low' check (urgency in ('high','low')),
-  note text,
-  day_bucket text not null default 'none' check (day_bucket in ('none','one','three','five')),
-  order_index bigint default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  done_at timestamptz,
-  archived_at timestamptz,
-  deleted_at timestamptz
-);
-
-create table if not exists public.work_logs (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  work_date date not null,
-  project_id uuid references public.projects(id) on delete set null,
-  project text,
-  hours numeric(5,2) not null default 8,
-  mark text not null default 'Я' check (mark in ('Я','В','Б','ОТ','НН')),
-  comment text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
-create table if not exists public.project_members (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  project_id uuid references public.projects(id) on delete cascade,
-  name text not null,
-  role text not null default 'Участник',
-  email text,
-  note text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
-create table if not exists public.promises (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  project_id uuid references public.projects(id) on delete set null,
-  direction text not null default 'to_me' check (direction in ('to_me','me_to')),
-  who text,
-  text text not null,
-  promised_date date,
-  check_date date,
-  status text not null default 'open' check (status in ('open','done','cancelled')),
-  note text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
-create table if not exists public.decisions (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  project_id uuid references public.projects(id) on delete set null,
-  decision_date date,
-  title text not null,
-  text text,
-  owner text,
-  impact text,
-  next_action text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
-create table if not exists public.task_templates (
-  id uuid primary key,
-  user_id uuid not null default auth.uid(),
-  name text not null,
-  title text,
-  project_id uuid references public.projects(id) on delete set null,
-  status text not null default 'inbox',
-  priority text not null default 'C',
-  importance text not null default 'low',
-  urgency text not null default 'low',
-  day_bucket text not null default 'none',
-  note text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  deleted_at timestamptz
-);
-
--- Migrations for existing installations
-alter table public.tasks add column if not exists project_id uuid references public.projects(id) on delete set null;
-alter table public.tasks add column if not exists archived_at timestamptz;
-alter table public.work_logs add column if not exists project_id uuid references public.projects(id) on delete set null;
-alter table public.tasks alter column order_index type bigint using order_index::bigint;
-
-alter table public.projects enable row level security;
-alter table public.project_members enable row level security;
-alter table public.promises enable row level security;
-alter table public.decisions enable row level security;
-alter table public.task_templates enable row level security;
-alter table public.tasks enable row level security;
-alter table public.work_logs enable row level security;
-
-drop policy if exists "Users can select own projects" on public.projects;
-drop policy if exists "Users can insert own projects" on public.projects;
-drop policy if exists "Users can update own projects" on public.projects;
-drop policy if exists "Users can delete own projects" on public.projects;
-drop policy if exists "Users can select own project members" on public.project_members;
-drop policy if exists "Users can insert own project members" on public.project_members;
-drop policy if exists "Users can update own project members" on public.project_members;
-drop policy if exists "Users can delete own project members" on public.project_members;
-drop policy if exists "Users can select own promises" on public.promises;
-drop policy if exists "Users can insert own promises" on public.promises;
-drop policy if exists "Users can update own promises" on public.promises;
-drop policy if exists "Users can delete own promises" on public.promises;
-drop policy if exists "Users can select own decisions" on public.decisions;
-drop policy if exists "Users can insert own decisions" on public.decisions;
-drop policy if exists "Users can update own decisions" on public.decisions;
-drop policy if exists "Users can delete own decisions" on public.decisions;
-drop policy if exists "Users can select own task templates" on public.task_templates;
-drop policy if exists "Users can insert own task templates" on public.task_templates;
-drop policy if exists "Users can update own task templates" on public.task_templates;
-drop policy if exists "Users can delete own task templates" on public.task_templates;
-drop policy if exists "Users can select own tasks" on public.tasks;
-drop policy if exists "Users can insert own tasks" on public.tasks;
-drop policy if exists "Users can update own tasks" on public.tasks;
-drop policy if exists "Users can delete own tasks" on public.tasks;
-drop policy if exists "Users can select own work logs" on public.work_logs;
-drop policy if exists "Users can insert own work logs" on public.work_logs;
-drop policy if exists "Users can update own work logs" on public.work_logs;
-drop policy if exists "Users can delete own work logs" on public.work_logs;
-
-create policy "Users can select own projects" on public.projects for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own projects" on public.projects for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own projects" on public.projects for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own projects" on public.projects for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own project members" on public.project_members for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own project members" on public.project_members for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own project members" on public.project_members for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own project members" on public.project_members for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own promises" on public.promises for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own promises" on public.promises for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own promises" on public.promises for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own promises" on public.promises for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own decisions" on public.decisions for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own decisions" on public.decisions for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own decisions" on public.decisions for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own decisions" on public.decisions for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own task templates" on public.task_templates for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own task templates" on public.task_templates for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own task templates" on public.task_templates for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own task templates" on public.task_templates for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own tasks" on public.tasks for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own tasks" on public.tasks for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own tasks" on public.tasks for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own tasks" on public.tasks for delete to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Users can select own work logs" on public.work_logs for select to authenticated using ((select auth.uid()) = user_id);
-create policy "Users can insert own work logs" on public.work_logs for insert to authenticated with check ((select auth.uid()) = user_id);
-create policy "Users can update own work logs" on public.work_logs for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Users can delete own work logs" on public.work_logs for delete to authenticated using ((select auth.uid()) = user_id);
-
-NOTIFY pgrst, 'reload schema';
-`;
 function migrateLocalData() {
   projects = projects.map(normalizeProject);
   projectMembers = projectMembers.map(normalizeProjectMember);
@@ -2609,6 +2708,8 @@ function openGlobalSearch() {
 
 function boot() {
   migrateLocalData();
+  saveSyncMeta();
+  recordSyncEvent('device', 'приложение открыто на устройстве', 'idle');
   processAuthRedirectIfNeeded().then(() => refreshAuthState({ renderNow:false }));
   runAutoArchiveCompleted({ persist: false });
   $('quickAddBtn').onclick = addTask;
