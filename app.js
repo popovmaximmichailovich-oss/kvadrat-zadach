@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '2.9.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -9,8 +9,6 @@ const TEMPLATES_KEY = 'eisenhower_templates_v1';
 const DOCS_KEY = 'eisenhower_project_docs_v1';
 const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
-const SYNC_META_KEY = 'kvadrat_zadach_sync_meta_v1';
-const DEVICE_ID_KEY = 'kvadrat_zadach_device_id_v1';
 const DEFAULT_SUPABASE_URL = 'https://bgoplepnfzprnagandsw.supabase.co';
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_96Juj1RHnPzgZS_ZF1OxWA_0LCjE61o';
 const PERSONAL_MODE_TEXT = 'Личное пространство: другие пользователи не видят ваши проекты и задачи.';
@@ -42,7 +40,6 @@ let supabaseClientKey = '';
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '' };
-let syncMeta = loadSyncMeta();
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -53,156 +50,6 @@ const addDays = (n) => {
 };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 const nowISO = () => new Date().toISOString();
-
-
-function safeJsonParse(value, fallback) {
-  try { return JSON.parse(value); } catch { return fallback; }
-}
-function getDeviceId() {
-  let id = localStorage.getItem(DEVICE_ID_KEY);
-  if (!id) {
-    id = 'dev-' + uid();
-    localStorage.setItem(DEVICE_ID_KEY, id);
-  }
-  return id;
-}
-function deviceKind() {
-  const ua = navigator.userAgent || '';
-  const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
-  if (/iPhone|iPad|iPod/i.test(ua)) return standalone ? 'iPhone / PWA' : 'iPhone / Safari';
-  if (/Android/i.test(ua)) return standalone ? 'Android / PWA' : 'Android / браузер';
-  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
-  if (/Windows/i.test(ua)) return 'Windows';
-  return 'Браузер';
-}
-function deviceName() {
-  return `${deviceKind()} · ${navigator.language || 'ru-RU'}`;
-}
-function loadSyncMeta() {
-  const base = {
-    deviceId: '',
-    deviceName: '',
-    pendingChanges: 0,
-    lastLocalChangeAt: '',
-    lastSyncAt: '',
-    lastPushAt: '',
-    lastPullAt: '',
-    lastCheckAt: '',
-    lastDeviceCheckAt: '',
-    lastSuccessfulAuthAt: '',
-    lastMode: 'local',
-    journal: []
-  };
-  const loaded = safeJsonParse(localStorage.getItem(SYNC_META_KEY) || '{}', {});
-  const meta = { ...base, ...loaded };
-  meta.deviceId = meta.deviceId || getDeviceId();
-  meta.deviceName = meta.deviceName || deviceName();
-  meta.journal = Array.isArray(meta.journal) ? meta.journal.slice(0, 80) : [];
-  return meta;
-}
-function saveSyncMeta() {
-  syncMeta.deviceId = syncMeta.deviceId || getDeviceId();
-  syncMeta.deviceName = deviceName();
-  localStorage.setItem(SYNC_META_KEY, JSON.stringify(syncMeta));
-}
-function recordSyncEvent(type, text, tone='idle') {
-  syncMeta.deviceId = syncMeta.deviceId || getDeviceId();
-  syncMeta.deviceName = deviceName();
-  const event = { id: uid(), at: nowISO(), type, tone, text, deviceId: syncMeta.deviceId, deviceName: syncMeta.deviceName, email: settings.email || syncDiagnostics.email || '' };
-  syncMeta.journal = [event, ...(syncMeta.journal || [])].slice(0, 80);
-  if (type === 'check') syncMeta.lastCheckAt = event.at;
-  if (type === 'push') syncMeta.lastPushAt = event.at;
-  if (type === 'pull') syncMeta.lastPullAt = event.at;
-  if (type === 'sync') syncMeta.lastSyncAt = event.at;
-  if (type === 'auth') syncMeta.lastSuccessfulAuthAt = event.at;
-  if (type === 'device') syncMeta.lastDeviceCheckAt = event.at;
-  saveSyncMeta();
-}
-function markPendingChange(reason='изменение данных') {
-  syncMeta.pendingChanges = Number(syncMeta.pendingChanges || 0) + 1;
-  syncMeta.lastLocalChangeAt = nowISO();
-  syncMeta.lastMode = syncDiagnostics.userId ? 'pending' : 'local';
-  recordSyncEvent('local', reason, syncDiagnostics.userId ? 'warn' : 'bad');
-}
-function clearPendingChanges(reason='синхронизация выполнена') {
-  syncMeta.pendingChanges = 0;
-  syncMeta.lastMode = syncDiagnostics.userId ? 'cloud' : 'local';
-  recordSyncEvent('sync', reason, 'ok');
-}
-function syncConfidenceStatus() {
-  const signed = Boolean(syncDiagnostics.userId);
-  const pending = Number(syncMeta.pendingChanges || 0);
-  if (!signed) return { tone:'warn', title:'Локальный режим', text:'Вход не выполнен. Данные сохраняются на этом устройстве, но пока не попадают в облако.' };
-  if (pending > 0) return { tone:'warn', title:'Есть несинхронизированные изменения', text:`Ожидают отправки: ${pending}. Нажмите «Выгрузить в облако» или дождитесь автосинхронизации.` };
-  if (syncMeta.lastSyncAt || syncMeta.lastPushAt || syncMeta.lastPullAt) return { tone:'ok', title:'Облако активно', text:'Это устройство подключено к личному пространству. Данные синхронизированы или готовы к синхронизации.' };
-  return { tone:'warn', title:'Вход выполнен, облако не проверено', text:'Проверьте облако, чтобы убедиться, что устройство видит личное пространство.' };
-}
-function shortDateTime(iso) {
-  if (!iso) return 'не было';
-  try { return new Date(iso).toLocaleString('ru-RU'); } catch { return iso; }
-}
-function renderLocalModeWarning() {
-  const s = syncConfidenceStatus();
-  if (s.tone === 'ok') return '';
-  return `<section class="local-mode-warning card sync-${s.tone}"><strong>${escapeHtml(s.title)}</strong><p>${escapeHtml(s.text)}</p><button class="primary compact-primary" data-action="openSyncFromStats" type="button">Настроить синхронизацию</button></section>`;
-}
-function renderDeviceStatusPanel() {
-  const s = syncConfidenceStatus();
-  return `<section class="device-status-panel card sync-${s.tone}">
-    <div class="device-status-head">
-      <div><span class="view-kicker">это устройство</span><h3>${escapeHtml(deviceKind())}</h3><p>${escapeHtml(s.text)}</p></div>
-      <span class="device-login-status ${s.tone === 'ok' ? 'ok' : 'warn'}">${escapeHtml(s.title)}</span>
-    </div>
-    <div class="device-status-grid">
-      <div><strong>device_id</strong><span>${escapeHtml((syncMeta.deviceId || getDeviceId()).slice(0,18))}</span></div>
-      <div><strong>email</strong><span>${escapeHtml(syncDiagnostics.email || settings.email || 'не указан')}</span></div>
-      <div><strong>вход</strong><span>${syncDiagnostics.userId ? 'выполнен' : 'не выполнен'}</span></div>
-      <div><strong>ожидает выгрузки</strong><span>${Number(syncMeta.pendingChanges || 0)}</span></div>
-      <div><strong>последняя синхронизация</strong><span>${escapeHtml(shortDateTime(syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt))}</span></div>
-      <div><strong>последнее изменение</strong><span>${escapeHtml(shortDateTime(syncMeta.lastLocalChangeAt))}</span></div>
-    </div>
-    <div class="task-actions sync-actions">
-      <button class="primary" id="checkDeviceBtn" type="button">Проверить это устройство</button>
-      <button class="ghost" id="exportSyncLog" type="button">Скачать журнал</button>
-      <button class="ghost" id="clearSyncLog" type="button">Очистить журнал</button>
-    </div>
-  </section>`;
-}
-function renderSyncJournal(limit=8) {
-  const items = (syncMeta.journal || []).slice(0, limit);
-  return `<section class="sync-journal card"><div class="column-title-row"><div><h3>Журнал синхронизации</h3><p class="column-sub">Последние события этого устройства. Без технических терминов.</p></div><span class="metric-pill">${(syncMeta.journal || []).length}</span></div>
-    <div class="sync-journal-list">${items.map(e => `<div class="sync-journal-row ${e.tone || 'idle'}"><strong>${escapeHtml(e.text)}</strong><span>${escapeHtml(shortDateTime(e.at))} · ${escapeHtml(e.deviceName || deviceKind())}</span></div>`).join('') || '<div class="empty">Журнал пока пуст</div>'}</div>
-  </section>`;
-}
-function checkThisDevice() {
-  syncMeta.lastDeviceCheckAt = nowISO();
-  recordSyncEvent('device', syncDiagnostics.userId ? 'устройство подключено и готово к синхронизации' : 'устройство работает локально — нужен вход по email', syncDiagnostics.userId ? 'ok' : 'warn');
-  setSyncState(syncDiagnostics.userId ? 'устройство подключено' : 'локальный режим · нужен вход', syncDiagnostics.userId ? 'ok' : 'warn');
-  render();
-}
-function exportSyncLog() {
-  const payload = {
-    appVersion: APP_VERSION,
-    exportedAt: nowISO(),
-    deviceId: syncMeta.deviceId || getDeviceId(),
-    deviceName: deviceName(),
-    email: syncDiagnostics.email || settings.email || '',
-    userId: syncDiagnostics.userId || '',
-    pendingChanges: Number(syncMeta.pendingChanges || 0),
-    lastSyncAt: syncMeta.lastSyncAt,
-    lastPushAt: syncMeta.lastPushAt,
-    lastPullAt: syncMeta.lastPullAt,
-    lastCheckAt: syncMeta.lastCheckAt,
-    journal: syncMeta.journal || []
-  };
-  downloadText(`kvadrat-sync-log-${today()}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
-}
-function clearSyncLog() {
-  syncMeta.journal = [];
-  saveSyncMeta();
-  setSyncState('журнал синхронизации очищен', 'ok');
-  render();
-}
 
 function loadArray(key) {
   try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
@@ -270,7 +117,6 @@ function persistAll({ renderNow = true, sync = false } = {}) {
   localStorage.setItem(DOCS_KEY, JSON.stringify(projectDocs));
   localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify(adminUsers));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  if (sync) markPendingChange('локальное изменение ожидает синхронизации');
   if (renderNow) render();
   if (sync) scheduleAutoSync();
 }
@@ -1156,25 +1002,44 @@ function renderFocusStrip(todays, overdue, stuck, delegate, noProject) {
 }
 
 
+
+function safeSyncBadgeStatus() {
+  const signed = Boolean(syncDiagnostics.userId);
+  const localCount = activeTasks().length;
+  const remote = syncDiagnostics.remoteTasks;
+  if (!signed) return { tone:'warn', title:'Локальный режим', text:`На этом устройстве ${localCount} задач. Для общего пространства нужен вход по email-коду.` };
+  if (remote === null || remote === undefined) return { tone:'warn', title:'Вход выполнен', text:'Облако ещё не проверено. Нажмите «Проверить облако».' };
+  return { tone:'ok', title:'Облако активно', text:`Локально ${localCount} задач · в облаке ${remote} задач.` };
+}
+function renderSafeSyncStatusCard() {
+  const s = safeSyncBadgeStatus();
+  return `<section class="safe-sync-card card sync-${s.tone}">
+    <div><span class="view-kicker">синхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p></div>
+    <div class="task-actions">
+      <button class="${syncDiagnostics.userId ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${syncDiagnostics.userId ? 'Открыть синхронизацию' : 'Войти по коду'}</button>
+      <button class="ghost compact-primary" data-action="checkCloudFromHome" type="button">Проверить облако</button>
+    </div>
+  </section>`;
+}
+
 function renderHomeAuthStatusCard() {
   const signedIn = Boolean(syncDiagnostics.userId);
-  const status = syncConfidenceStatus();
+  const status = safeSyncBadgeStatus();
   const cloudText = syncDiagnostics.remoteTasks === null || syncDiagnostics.remoteTasks === undefined
     ? 'облако не проверено'
     : `${syncDiagnostics.remoteTasks} задач в облаке`;
-  const lastText = syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt ? `синхронизация: ${escapeHtml(shortDateTime(syncMeta.lastSyncAt || syncDiagnostics.lastCheckedAt))}` : 'синхронизации ещё не было';
+  const lastText = syncDiagnostics.lastCheckedAt ? `проверка: ${escapeHtml(syncDiagnostics.lastCheckedAt)}` : 'проверки ещё не было';
   return `<section class="home-auth-card card auth-${status.tone}">
     <div class="home-auth-main">
       <span class="auth-dot"></span>
       <div>
         <strong>${escapeHtml(status.title)}</strong>
-        <p>${signedIn ? `${escapeHtml(syncDiagnostics.email || settings.email || 'email не указан')} · user ${escapeHtml(syncDiagnostics.userId.slice(0,8))}` : `${escapeHtml(settings.email || 'email не указан')} · это устройство работает локально`}</p>
+        <p>${signedIn ? `${escapeHtml(syncDiagnostics.email || settings.email || 'email не указан')} · user ${escapeHtml(syncDiagnostics.userId.slice(0,8))}` : `${escapeHtml(settings.email || 'email не указан')} · вход на этом устройстве не выполнен`}</p>
       </div>
     </div>
     <div class="home-auth-meta">
       <span>${escapeHtml(cloudText)}</span>
-      <span>${lastText}</span>
-      <span>ожидает выгрузки: ${Number(syncMeta.pendingChanges || 0)}</span>
+      <span>${escapeHtml(lastText)}</span>
     </div>
     <div class="home-auth-actions">
       <button class="${signedIn ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${signedIn ? 'Открыть синхронизацию' : 'Войти / синхронизировать'}</button>
@@ -1182,7 +1047,6 @@ function renderHomeAuthStatusCard() {
     </div>
   </section>`;
 }
-
 function renderCommander() {
   const todays = activeTasks().filter(t => t.status !== 'done' && t.planDate === today());
   const overdue = activeTasks().filter(isOverdue);
@@ -1194,7 +1058,6 @@ function renderCommander() {
   const next = todays.find(t => t.dayBucket === 'one') || todays.find(t => t.priority === 'A') || overdue[0] || stuck[0] || todays[0];
   return `<section class="section-head executive-day-head"><div><span class="view-kicker">операционный центр</span><h2>День</h2><p>Главный экран руководителя: фокус, риски, задачи на сегодня и проекты, которые требуют внимания.</p></div></section>
   ${renderHomeAuthStatusCard()}
-  ${renderLocalModeWarning()}
   ${renderFocusStrip(todays, overdue, stuck, delegate, noProject)}
   ${todayOverloadNotice(todays)}
   <section class="day-focus-card card">
@@ -1446,9 +1309,9 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.9.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
-    ${renderDeviceStatusPanel()}
+    ${renderSafeSyncStatusCard()}
 
     <section class="device-login-card card">
       <div class="device-login-head">
@@ -1490,7 +1353,6 @@ function renderSettings() {
         <div><strong>режим:</strong> личное пространство</div>
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
-        <div><strong>несинхронизировано:</strong> ${Number(syncMeta.pendingChanges || 0)}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
         ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
       </div>
@@ -1502,8 +1364,6 @@ function renderSettings() {
         <button class="ghost" id="runSelfCheck" type="button">Самопроверка</button>
       </div>
     </section>
-
-    ${renderSyncJournal(10)}
 
     <input id="syncUrl" type="hidden" value="${escapeHtml(normalizeSupabaseUrl(settings.supabaseUrl || DEFAULT_SUPABASE_URL))}" />
     <input id="syncKey" type="hidden" value="${escapeHtml(settings.supabaseAnonKey || DEFAULT_SUPABASE_PUBLISHABLE_KEY)}" />
@@ -1892,7 +1752,6 @@ async function logoutCloud() {
   syncDiagnostics.email = settings.email || '';
   syncDiagnostics.remoteTasks = null;
   syncDiagnostics.lastError = '';
-  recordSyncEvent('auth', 'выход из облака на этом устройстве', 'warn');
   setSyncState('выход выполнен · нужен вход по email', 'warn');
   render();
 }
@@ -1914,8 +1773,6 @@ function runAppSelfCheck() {
   try { mark('основные данные', Array.isArray(tasks) && Array.isArray(projects) && Array.isArray(workLogs)); } catch (e) { mark('основные данные', false, e.message); }
   try { mark('профиль пользователя', settings && typeof settings === 'object'); } catch (e) { mark('профиль пользователя', false, e.message); }
   try { mark('облачное подключение', Boolean(settings.supabaseUrl && settings.supabaseAnonKey), settings.email ? settings.email : 'email может быть пустым до входа'); } catch (e) { mark('облачное подключение', false, e.message); }
-  try { mark('статус синхронизации', typeof syncConfidenceStatus === 'function' && Boolean(syncConfidenceStatus().title), syncConfidenceStatus().title); } catch (e) { mark('статус синхронизации', false, e.message); }
-  try { mark('устройство', Boolean(syncMeta.deviceId || getDeviceId()), deviceKind()); } catch (e) { mark('устройство', false, e.message); }
   try {
     const actions = [...document.querySelectorAll('[data-action]')].map(x => x.dataset.action).filter(Boolean);
     mark('активные кнопки', actions.length >= 1, `${actions.length} обработчиков на текущем экране`);
@@ -1955,9 +1812,6 @@ function bindSyncPanelButtons() {
   if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
   if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
-  if ($('checkDeviceBtn')) $('checkDeviceBtn').onclick = (e) => { e.preventDefault(); checkThisDevice(); };
-  if ($('exportSyncLog')) $('exportSyncLog').onclick = (e) => { e.preventDefault(); exportSyncLog(); };
-  if ($('clearSyncLog')) $('clearSyncLog').onclick = (e) => { e.preventDefault(); clearSyncLog(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
@@ -2375,13 +2229,10 @@ async function checkCloudConnection() {
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastError = '';
-    syncMeta.lastCheckAt = nowISO();
-    recordSyncEvent('check', `облако доступно · задач: ${cloudTasks}`, 'ok');
     setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${cloudTasks}`, 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
-    recordSyncEvent('check', isAuthNeededError(e) ? 'проверка облака: нужен вход' : 'ошибка проверки облака: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка проверки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
@@ -2404,13 +2255,10 @@ async function pullFromCloud() {
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
-    syncMeta.lastPullAt = nowISO();
-    recordSyncEvent('pull', `загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     setSyncState(`загружено из облака · локально задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
-    recordSyncEvent('pull', isAuthNeededError(e) ? 'загрузка из облака: нужен вход' : 'ошибка загрузки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка загрузки: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     render();
   }
@@ -2478,7 +2326,6 @@ async function verifyEmailCode() {
     syncDiagnostics.email = user.email || settings.email || '';
   }
   syncDiagnostics.lastError = '';
-  recordSyncEvent('auth', `вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
   setSyncState(`вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
   await refreshAuthState({ renderNow:false });
   render();
@@ -2530,11 +2377,6 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     syncDiagnostics.remoteTasks = await countCloudTasks(client);
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
-    syncMeta.lastSyncAt = nowISO();
-    if (mode === 'push') syncMeta.lastPushAt = syncMeta.lastSyncAt;
-    if (mode !== 'push') syncMeta.lastPullAt = syncMeta.lastSyncAt;
-    syncMeta.pendingChanges = 0;
-    recordSyncEvent(mode === 'push' ? 'push' : 'sync', `${mode === 'push' ? 'выгружено в облако' : 'синхронизировано'} · задач: ${syncDiagnostics.localTasks}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     const warning = syncDiagnostics.lastError ? ` · предупреждение: ${syncDiagnostics.lastError}` : '';
     setSyncState(`${mode === 'push' ? 'выгружено' : 'синхронизировано'} ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}${warning}`, syncDiagnostics.lastError ? 'warn' : 'ok');
     render();
@@ -2542,7 +2384,6 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
   } catch (e) {
     console.warn(e);
     syncDiagnostics.lastError = e.message;
-    recordSyncEvent('sync', isAuthNeededError(e) ? 'синхронизация: нужен вход' : 'ошибка синхронизации: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
     if (isAuthNeededError(e)) {
       setSyncState('нужен вход по email', 'warn');
       if (!silent) alert(friendlyAuthMessage());
@@ -2708,8 +2549,6 @@ function openGlobalSearch() {
 
 function boot() {
   migrateLocalData();
-  saveSyncMeta();
-  recordSyncEvent('device', 'приложение открыто на устройстве', 'idle');
   processAuthRedirectIfNeeded().then(() => refreshAuthState({ renderNow:false }));
   runAutoArchiveCompleted({ persist: false });
   $('quickAddBtn').onclick = addTask;
