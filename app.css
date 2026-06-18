@@ -3524,3 +3524,51 @@ button:disabled {
 
 
 /* v2.10.1 Sync Diagnostics Cleanup */
+
+
+
+/* v2.10.2 Delete Sync Fix */
+.danger-mini {
+  color: #fecaca !important;
+  border-color: rgba(248,113,113,.35) !important;
+  background: rgba(127,29,29,.16) !important;
+}
+.danger-mini:hover {
+  background: rgba(185,28,28,.28) !important;
+}
+
+
+
+/* v2.10.3 Simple Sync UX */
+.simple-sync-main,
+#forceAutoSyncNow {
+  min-height: 54px;
+  font-size: 16px;
+  font-weight: 800;
+}
+.sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.sync-actions .simple-sync-main {
+  min-width: 260px;
+}
+.user-sync-screen .device-login-card .sync-actions {
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+}
+@media (max-width: 860px) {
+  .sync-actions {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+  }
+  .sync-actions button {
+    width: 100%;
+  }
+  .safe-sync-card .task-actions {
+    width: 100%;
+  }
+  #forceAutoSyncNow {
+    width: 100%;
+  }
+}
