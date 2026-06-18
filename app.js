@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.4';
+const APP_VERSION = '2.9.5';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -10,6 +10,8 @@ const DOCS_KEY = 'eisenhower_project_docs_v1';
 const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
 const DIRTY_TASKS_KEY = 'kvadrat_zadach_dirty_tasks_v1';
+const APP_ERROR_LOG_KEY = 'kvadrat_zadach_app_errors_v1';
+const OTP_LAST_REQUEST_KEY = 'kvadrat_zadach_otp_last_request_at';
 const DEFAULT_SUPABASE_URL = 'https://bgoplepnfzprnagandsw.supabase.co';
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_96Juj1RHnPzgZS_ZF1OxWA_0LCjE61o';
 const PERSONAL_MODE_TEXT = 'Личное пространство: другие пользователи не видят ваши проекты и задачи.';
@@ -41,6 +43,8 @@ let autoPullTimer = null;
 let lastAutoSyncReason = '';
 let dirtyTaskIds = loadDirtyTaskIds();
 let autoSyncRetryCount = 0;
+let taskCloudBusy = false;
+let otpRequestInProgress = false;
 let supabaseClientInstance = null;
 let supabaseClientKey = '';
 let selectedQuickProjectId = '';
@@ -57,6 +61,78 @@ const addDays = (n) => {
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 const nowISO = () => new Date().toISOString();
 
+
+
+function recordAppError(source, error) {
+  const msg = String(error?.message || error || 'Неизвестная ошибка');
+  const item = { at: new Date().toISOString(), source: String(source || 'app'), message: msg };
+  try {
+    const list = JSON.parse(localStorage.getItem(APP_ERROR_LOG_KEY) || '[]');
+    const next = [item, ...(Array.isArray(list) ? list : [])].slice(0, 20);
+    localStorage.setItem(APP_ERROR_LOG_KEY, JSON.stringify(next));
+  } catch {}
+  syncDiagnostics.lastError = `${item.source}: ${item.message}`;
+}
+function lastAppErrorText() {
+  try {
+    const list = JSON.parse(localStorage.getItem(APP_ERROR_LOG_KEY) || '[]');
+    const item = Array.isArray(list) ? list[0] : null;
+    if (!item) return '';
+    return `${new Date(item.at).toLocaleString('ru-RU')} · ${item.source}: ${item.message}`;
+  } catch { return ''; }
+}
+function clearAppErrors() {
+  localStorage.removeItem(APP_ERROR_LOG_KEY);
+  syncDiagnostics.lastError = '';
+  render();
+}
+function installGlobalErrorHandlers() {
+  if (window.__kvadratErrorHandlersInstalled) return;
+  window.__kvadratErrorHandlersInstalled = true;
+  window.addEventListener('error', (event) => {
+    recordAppError('ошибка приложения', event.error || event.message);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    recordAppError('ошибка фоновой операции', event.reason || 'Promise rejected');
+  });
+}
+function otpCooldownSeconds() {
+  const last = Number(localStorage.getItem(OTP_LAST_REQUEST_KEY) || 0);
+  if (!last) return 0;
+  const left = 60 - Math.floor((Date.now() - last) / 1000);
+  return Math.max(0, left);
+}
+function markOtpRequestedNow() {
+  localStorage.setItem(OTP_LAST_REQUEST_KEY, String(Date.now()));
+}
+function setButtonBusy(id, busy, textBusy='Подождите…') {
+  const btn = $(id);
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
+    btn.disabled = true;
+    btn.textContent = textBusy;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
+  }
+}
+function projectIdExistsLocally(id) {
+  return Boolean(id && projects.some(p => p.id === id && !p.deletedAt));
+}
+function taskToSafeRow(t, userId) {
+  const row = taskToRow(t, userId);
+  if (row.project_id && !projectIdExistsLocally(row.project_id)) row.project_id = null;
+  return row;
+}
+async function upsertProjectDependencies(client, userId) {
+  const ids = new Set(tasks.map(t => t.projectId).filter(Boolean));
+  const related = projects.filter(p => ids.has(p.id) && !p.deletedAt).map(p => projectToRow(normalizeProject(p), userId));
+  if (!related.length) return true;
+  const { error } = await client.from('projects').upsert(related, { onConflict:'id' });
+  if (error) throw error;
+  return true;
+}
 
 function loadDirtyTaskIds() {
   try {
@@ -1356,7 +1432,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
+    <div class="notice"><strong>Версия 2.9.5</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1406,6 +1482,7 @@ function renderSettings() {
         <div><strong>последняя задача в облаке:</strong> ${escapeHtml(syncDiagnostics.lastCloudTask || 'не проверено')}</div>
         <div><strong>последняя выгрузка:</strong> ${syncDiagnostics.lastPushAt || 'не было'}</div>
         <div><strong>последняя загрузка:</strong> ${syncDiagnostics.lastPullAt || 'не было'}</div>
+        <div><strong>последняя ошибка приложения:</strong> ${escapeHtml(lastAppErrorText() || 'нет')}</div>
         ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
       </div>
       <div class="task-actions sync-actions">
@@ -1417,6 +1494,8 @@ function renderSettings() {
         <button class="ghost" id="checkCloud" type="button">Проверить облако</button>
         <button class="danger" id="logoutCloud" type="button">Выйти из облака</button>
         <button class="ghost" id="runSelfCheck" type="button">Самопроверка</button>
+        <button class="ghost" id="hardRefreshApp" type="button">Очистить кэш и перезагрузить</button>
+        <button class="ghost" id="clearAppErrors" type="button">Очистить ошибки</button>
       </div>
     </section>
 
@@ -1874,6 +1953,8 @@ function bindSyncPanelButtons() {
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
   if ($('forceAutoSyncNow')) $('forceAutoSyncNow').onclick = (e) => { e.preventDefault(); forceAutoSyncNow(); };
+  if ($('hardRefreshApp')) $('hardRefreshApp').onclick = async (e) => { e.preventDefault(); await clearAppCaches(); location.reload(); };
+  if ($('clearAppErrors')) $('clearAppErrors').onclick = (e) => { e.preventDefault(); clearAppErrors(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
 function openEdit(id) {
@@ -2064,7 +2145,7 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('refreshAuthBtn')) $('refreshAuthBtn').onclick = () => refreshAuthState({ renderNow:true });
   if ($('copyWeeklyReport')) $('copyWeeklyReport').onclick = async () => { await navigator.clipboard.writeText(weeklyReportText()); alert('Отчёт скопирован.'); };
   if ($('downloadWeeklyReport')) $('downloadWeeklyReport').onclick = () => downloadText(`weekly-report-${today()}.txt`, weeklyReportText(), 'text/plain;charset=utf-8');
-  if ($('exportBackup')) $('exportBackup').onclick = exportBackup;
+  if ($('exportBackup')) $('exportBackup').onclick = () => exportBackup('manual');
   if ($('importJson')) $('importJson').onchange = importJson;
 }
 function downloadText(filename, text, type='text/plain;charset=utf-8') { const blob = new Blob([text], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href); }
@@ -2179,7 +2260,7 @@ function isMissingAuthSessionError(error) {
   return msg.includes('auth session missing') || msg.includes('session missing') || msg.includes('missing session') || msg.includes('invalid refresh token') || msg.includes('refresh token not found') || msg.includes('jwt expired');
 }
 function friendlyAuthMessage() {
-  return 'Нужно войти в личное пространство на этом устройстве: откройте раздел «Синхронизация», введите email, нажмите «Сохранить настройки», затем «Отправить ссылку входа» и откройте письмо на этом же устройстве.';
+  return 'Нужно войти в личное пространство на этом устройстве: откройте «Синхронизация», введите email, нажмите «Получить код на почту», затем введите код из письма в приложении.';
 }
 function isAuthNeededError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
@@ -2305,6 +2386,8 @@ async function refreshTaskSyncDiagnostics(client) {
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
 }
 async function pushTasksOnly({ silent = false, onlyDirty = false } = {}) {
+  if (taskCloudBusy) { if (!silent) alert('Синхронизация уже выполняется. Подождите несколько секунд.'); return false; }
+  taskCloudBusy = true;
   const client = getSupabaseClient();
   if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
   setSyncState('выгрузка задач в облако...', 'warn');
@@ -2314,7 +2397,8 @@ async function pushTasksOnly({ silent = false, onlyDirty = false } = {}) {
     const source = onlyDirty
       ? [...dirtyTaskIds].map(id => localTaskById(id)).filter(Boolean)
       : tasks;
-    const rows = source.map(t => taskToRow(normalizeTask(t), user.id));
+    await upsertProjectDependencies(client, user.id);
+    const rows = source.map(t => taskToSafeRow(normalizeTask(t), user.id));
     if (rows.length) {
       const { error } = await client.from('tasks').upsert(rows, { onConflict:'id' });
       if (error) throw error;
@@ -2349,9 +2433,13 @@ async function pushTasksOnly({ silent = false, onlyDirty = false } = {}) {
     if (!silent) alert(isAuthNeededError(e) ? friendlyAuthMessage() : e.message);
     render();
     return false;
+  } finally {
+    taskCloudBusy = false;
   }
 }
 async function pullTasksOnly({ silent = false } = {}) {
+  if (taskCloudBusy) { if (!silent) alert('Синхронизация уже выполняется. Подождите несколько секунд.'); return false; }
+  taskCloudBusy = true;
   const client = getSupabaseClient();
   if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
   setSyncState('загрузка задач из облака...', 'warn');
@@ -2374,6 +2462,8 @@ async function pullTasksOnly({ silent = false } = {}) {
     if (!silent) alert(isAuthNeededError(e) ? friendlyAuthMessage() : e.message);
     render();
     return false;
+  } finally {
+    taskCloudBusy = false;
   }
 }
 async function syncTasksBothWays({ silent = false } = {}) {
@@ -2567,21 +2657,50 @@ async function sendMagicLink() {
   alert('Письмо отправлено. На iPhone удобнее использовать код из письма: введите его в поле «Код из письма» и нажмите «Войти по коду».');
 }
 async function sendEmailCode() {
+  if (otpRequestInProgress) return;
+  const wait = otpCooldownSeconds();
+  if (wait > 0) {
+    setSyncState(`код уже запрошен · подождите ${wait} сек.`, 'warn');
+    alert(`Код уже запрошен. Подождите ${wait} сек. и проверьте почту/спам.`);
+    render();
+    return;
+  }
   settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
   settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
   settings.email = $('syncEmail')?.value.trim() || settings.email;
   saveSettings({ renderNow:false });
   const client = getSupabaseClient();
-  if (!client) return alert('Облачное подключение временно недоступно.');
+  if (!client) {
+    setSyncState('облачный модуль не загрузился', 'bad');
+    alert('Облачный модуль не загрузился. Проверьте интернет и обновите приложение.');
+    render();
+    return;
+  }
   if (!settings.email) return alert('Укажите email личного пространства.');
-  const { error } = await client.auth.signInWithOtp({
-    email: settings.email,
-    options: { shouldCreateUser: true, emailRedirectTo: getAuthRedirectUrl() }
-  });
-  if (error) return alert(error.message);
-  setSyncState('код отправлен на email', 'warn');
+  otpRequestInProgress = true;
+  setButtonBusy('sendEmailCode', true, 'Отправляем код…');
+  setSyncState('запрашиваем код на email...', 'warn');
   render();
-  alert('Код отправлен на email. Введите код из письма в этом же приложении и нажмите «Войти по коду».');
+  try {
+    const { error } = await client.auth.signInWithOtp({
+      email: settings.email,
+      options: { shouldCreateUser: true, emailRedirectTo: getAuthRedirectUrl() }
+    });
+    if (error) throw error;
+    markOtpRequestedNow();
+    setSyncState('код запрошен · проверьте почту', 'ok');
+    alert('Запрос кода отправлен. Проверьте входящие и спам. Повторный запрос — не раньше чем через 60 секунд.');
+  } catch (e) {
+    recordAppError('получение кода', e);
+    const msg = String(e?.message || e || 'Неизвестная ошибка');
+    if (/rate|limit|seconds|too many/i.test(msg)) markOtpRequestedNow();
+    setSyncState('ошибка отправки кода: ' + msg, 'bad');
+    alert('Код не отправлен: ' + msg + '\n\nЕсли Supabase пишет про лимит — подождите 60 секунд. Если ошибки нет, но письма нет — проверьте Resend → Logs и SMTP в Supabase.');
+  } finally {
+    otpRequestInProgress = false;
+    setButtonBusy('sendEmailCode', false);
+    render();
+  }
 }
 async function verifyEmailCode() {
   settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
@@ -2594,7 +2713,7 @@ async function verifyEmailCode() {
   if (!settings.email) return alert('Укажите email личного пространства.');
   if (!token) return alert('Введите код из письма.');
   const { data, error } = await client.auth.verifyOtp({ email: settings.email, token, type: 'email' });
-  if (error) return alert(error.message);
+  if (error) { recordAppError('вход по коду', error); setSyncState('ошибка входа по коду: ' + error.message, 'bad'); render(); return alert(error.message); }
   const user = data?.user || data?.session?.user;
   if (user) {
     syncDiagnostics.userId = user.id || '';
@@ -2636,7 +2755,7 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
     await safeUpsert(client, 'promises', promises.map(p => promiseToRow(normalizePromise(p), user.id)));
     await safeUpsert(client, 'decisions', decisions.map(d => decisionToRow(normalizeDecision(d), user.id)));
     await safeUpsert(client, 'task_templates', taskTemplates.map(t => taskTemplateToRow(normalizeTaskTemplate(t), user.id)));
-    await safeUpsert(client, 'tasks', tasks.map(t => taskToRow(normalizeTask(t), user.id)));
+    await safeUpsert(client, 'tasks', tasks.map(t => taskToSafeRow(normalizeTask(t), user.id)));
     await safeUpsert(client, 'work_logs', workLogs.map(l => workLogToRow(normalizeWorkLog(l), user.id)));
 
     if (mode !== 'push') {
@@ -2824,6 +2943,7 @@ function openGlobalSearch() {
 }
 
 function boot() {
+  installGlobalErrorHandlers();
   migrateLocalData();
   processAuthRedirectIfNeeded().then(() => refreshAuthState({ renderNow:false }));
   runAutoArchiveCompleted({ persist: false });

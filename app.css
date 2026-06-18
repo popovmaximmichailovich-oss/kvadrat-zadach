@@ -3467,3 +3467,18 @@ button.stat {
   border-color: rgba(245,158,11,.30);
   color: #fde68a;
 }
+
+
+
+/* v2.9.5 Quality Stabilization */
+button:disabled {
+  opacity: .58;
+  cursor: wait;
+}
+.sync-diagnostics-grid div strong {
+  min-width: 0;
+}
+#hardRefreshApp,
+#clearAppErrors {
+  border-color: rgba(148,163,184,.24);
+}
