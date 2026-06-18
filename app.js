@@ -1,4 +1,4 @@
-const APP_VERSION = '2.10.3';
+const APP_VERSION = '2.10.4';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -603,7 +603,7 @@ function addTask() {
   syncDiagnostics.localTasks = activeTasks().length;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
   syncDiagnostics.lastError = '';
-  setSyncState('задача создана локально · нажмите «Синхронизировать задачи»', 'warn');
+  setSyncState('задача создана локально · нажмите «Синхронизировать»', 'warn');
   addSyncAudit('быстрая задача', `создана локально: ${t.title}`);
 }
 function deleteTask(id) {
@@ -611,7 +611,7 @@ function deleteTask(id) {
   updateTask(id, { deletedAt: nowISO() });
   syncDiagnostics.localTasks = activeTasks().length;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  setSyncState('задача удалена локально · нажмите «Синхронизировать задачи»', 'warn');
+  setSyncState('задача удалена локально · нажмите «Синхронизировать»', 'warn');
   addSyncAudit('удаление задачи', task ? `удалена локально: ${task.title}` : id);
   render();
 }
@@ -1195,7 +1195,7 @@ function renderSafeSyncStatusCard() {
       <span class="view-kicker">синхронизация</span>
       <h3>${escapeHtml(s.title)}</h3>
       <p>${escapeHtml(s.text)}</p>
-      <p class="auto-sync-note">Одна кнопка: создайте или удалите задачу → нажмите «Синхронизировать» на этом устройстве → нажмите её на втором устройстве.</p>
+      <p class="auto-sync-note">Одна кнопка: создали или удалили задачу → нажмите «Синхронизировать» здесь → нажмите её на втором устройстве.</p>
     </div>
     <div class="task-actions">
       <button class="primary compact-primary" id="forceAutoSyncNow" type="button">${syncDiagnostics.userId ? 'Синхронизировать' : 'Войти и синхронизировать'}</button>
@@ -1489,7 +1489,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.10.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
+    <div class="notice"><strong>Версия 2.10.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -2573,11 +2573,8 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
   return { sent, failed, attempted: uniqueIds.length };
 }
 
-async function simpleOneButtonSync() {
-  return syncTasksBothWays({ silent:false, forceAll:true });
-}
 
-async function hardSyncTasks({ silent = false, pushAll = false } = {}) {
+async function conflictSafeManualSync({ silent = false } = {}) {
   const client = getSupabaseClient();
   if (!client) {
     const msg = 'Облачное подключение недоступно';
@@ -2585,43 +2582,62 @@ async function hardSyncTasks({ silent = false, pushAll = false } = {}) {
     if (!silent) alert(msg);
     return false;
   }
-  setSyncState('синхронизация задач...', 'warn');
-  addSyncAudit('старт', pushAll ? 'выгрузка всех локальных задач' : 'обычная синхронизация');
+
+  setSyncState('синхронизация...', 'warn');
+  addSyncAudit('старт', 'безопасный цикл: прочитать облако → отправить локальные изменения → прочитать облако');
   try {
     const user = await getActiveCloudUser(client);
     const beforeLocal = activeTasks().length;
-    const pushResult = await pushLocalTasksLineByLine(client, user.id, { onlyDirty: !pushAll });
+    const dirtyBefore = typeof dirtyTaskCount === 'function' ? dirtyTaskCount() : 0;
+
+    const cloudBefore = await fetchCloudTasksForUser(client, user.id);
+    mergeCloudIntoLocal(cloudBefore, { preserveLocal: true });
+
+    const pushResult = await pushLocalTasksLineByLine(client, user.id, { onlyDirty: true });
     if (pushResult.failed.length) {
       recordAppError('синхронизация задач', pushResult.failed.slice(0, 3).join('; '));
       addSyncAudit('часть задач не отправлена', pushResult.failed.slice(0, 3).join('; '));
     }
-    const cloudTasks = await fetchCloudTasksForUser(client, user.id);
-    mergeCloudIntoLocal(cloudTasks, { preserveLocal: true });
-    const activeCloud = activeCloudTasksList(cloudTasks);
+
+    const cloudAfter = await fetchCloudTasksForUser(client, user.id);
+    mergeCloudIntoLocal(cloudAfter, { preserveLocal: true });
+
+    const activeCloud = activeCloudTasksList(cloudAfter);
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.remoteTasks = activeCloud.length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
     syncDiagnostics.lastPushAt = syncDiagnostics.lastCheckedAt;
     syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
+    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudAfter);
     syncDiagnostics.lastCloudTaskAt = activeCloud[0]?.updatedAt || activeCloud[0]?.createdAt || '';
-    const tone = pushResult.failed.length ? 'warn' : 'ok';
-    if (!pushResult.failed.length) clearSyncErrorsAfterSuccess();
-    const text = `готово · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks} · отправлено ${pushResult.sent}/${pushResult.attempted}`;
-    setSyncState(text, tone);
-    addSyncAudit('успешно', text);
+
+    const ok = !pushResult.failed.length;
+    if (ok) clearSyncErrorsAfterSuccess();
+
+    const text = `готово · было локально ${beforeLocal} · стало ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks} · изменений ${dirtyBefore} · отправлено ${pushResult.sent}/${pushResult.attempted}`;
+    setSyncState(text, ok ? 'ok' : 'warn');
+    addSyncAudit(ok ? 'успешно' : 'частично', text);
     render();
-    return !pushResult.failed.length;
+    return ok;
   } catch (e) {
     const msg = e?.message || String(e);
-    recordAppError('жёсткая синхронизация', msg);
+    recordAppError('безопасная синхронизация', msg);
     addSyncAudit('ошибка', msg);
     setSyncState('ошибка синхронизации: ' + msg, 'bad');
     if (!silent) alert(msg);
     render();
     return false;
   }
+}
+
+async function simpleOneButtonSync() {
+  return conflictSafeManualSync({ silent:false });
+}
+
+async function hardSyncTasks({ silent = false, pushAll = false } = {}) {
+  // v2.10.4: legacy technical entry now uses conflict-safe cycle.
+  return conflictSafeManualSync({ silent });
 }
 
 async function pushTasksOnly({ silent = false, onlyDirty = true, forceAll = false } = {}) {
@@ -2659,16 +2675,8 @@ async function pullTasksOnly({ silent = false } = {}) {
   }
 }
 async function syncTasksBothWays({ silent = false, forceAll = false } = {}) {
-  return hardSyncTasks({ silent, pushAll: forceAll });
+  return conflictSafeManualSync({ silent });
 }
-
-async function syncPendingBeforeCloudRead(reason = 'проверка') {
-  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
-    addSyncAudit(reason, `перед проверкой отправляем ожидающие задачи: ${dirtyTaskCount()}`);
-    await hardSyncTasks({ silent:true, pushAll:false });
-  }
-}
-
 async function verifyLastTaskInCloud() {
   const client = getSupabaseClient();
   if (!client) return alert('Облачное подключение временно недоступно.');
