@@ -3492,3 +3492,13 @@ button:disabled {
 .sync-diagnostics-grid {
   word-break: break-word;
 }
+
+
+
+/* v2.9.7 Sync Block Rebuild */
+.sync-diagnostics-grid div {
+  line-height: 1.45;
+}
+#syncTasksBothWays {
+  box-shadow: 0 0 0 4px rgba(251,191,36,.16);
+}
