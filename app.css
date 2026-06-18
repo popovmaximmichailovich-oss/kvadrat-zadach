@@ -3451,3 +3451,19 @@ button.stat {
     width: 100%;
   }
 }
+
+
+
+/* v2.9.4 Auto Sync Reliability */
+#sendDirtyTasks {
+  box-shadow: 0 0 0 4px rgba(34,197,94,.12);
+}
+.safe-sync-card.sync-warn {
+  border-color: rgba(245,158,11,.42) !important;
+}
+#autoSyncInline.warn,
+.stat.warn {
+  background: rgba(245,158,11,.14);
+  border-color: rgba(245,158,11,.30);
+  color: #fde68a;
+}

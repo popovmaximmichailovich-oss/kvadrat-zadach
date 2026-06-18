@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.3';
+const APP_VERSION = '2.9.4';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -9,6 +9,7 @@ const TEMPLATES_KEY = 'eisenhower_templates_v1';
 const DOCS_KEY = 'eisenhower_project_docs_v1';
 const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
+const DIRTY_TASKS_KEY = 'kvadrat_zadach_dirty_tasks_v1';
 const DEFAULT_SUPABASE_URL = 'https://bgoplepnfzprnagandsw.supabase.co';
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_96Juj1RHnPzgZS_ZF1OxWA_0LCjE61o';
 const PERSONAL_MODE_TEXT = 'Личное пространство: другие пользователи не видят ваши проекты и задачи.';
@@ -38,6 +39,8 @@ let syncInProgress = false;
 let autoTaskSyncTimer = null;
 let autoPullTimer = null;
 let lastAutoSyncReason = '';
+let dirtyTaskIds = loadDirtyTaskIds();
+let autoSyncRetryCount = 0;
 let supabaseClientInstance = null;
 let supabaseClientKey = '';
 let selectedQuickProjectId = '';
@@ -53,6 +56,43 @@ const addDays = (n) => {
 };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 const nowISO = () => new Date().toISOString();
+
+
+function loadDirtyTaskIds() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(DIRTY_TASKS_KEY) || '[]');
+    return new Set(Array.isArray(arr) ? arr.filter(Boolean) : []);
+  } catch { return new Set(); }
+}
+function saveDirtyTaskIds() {
+  localStorage.setItem(DIRTY_TASKS_KEY, JSON.stringify([...dirtyTaskIds]));
+}
+function markTaskDirty(id) {
+  if (!id) return;
+  dirtyTaskIds.add(id);
+  saveDirtyTaskIds();
+  updateAutoSyncUi(`ожидает отправки задач: ${dirtyTaskIds.size}`, 'warn');
+}
+function markAllTasksDirty() {
+  activeTasks().forEach(t => dirtyTaskIds.add(t.id));
+  saveDirtyTaskIds();
+}
+function clearDirtyTasks() {
+  dirtyTaskIds.clear();
+  saveDirtyTaskIds();
+}
+function dirtyTaskCount() {
+  return dirtyTaskIds.size;
+}
+function localTaskById(id) {
+  return tasks.find(t => t.id === id);
+}
+async function cloudHasTask(client, id) {
+  if (!id) return false;
+  const { data, error } = await client.from('tasks').select('id,updated_at,title').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return Boolean(data?.id);
+}
 
 function loadArray(key) {
   try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
@@ -430,6 +470,7 @@ function addTask() {
     note: advancedOpen ? $('fieldNote').value : (quickAnalysis.note || '')
   });
   tasks.unshift(t);
+  markTaskDirty(t.id);
   $('quickTitle').value = '';
   $('fieldNote').value = '';
 
@@ -1011,7 +1052,9 @@ function safeSyncBadgeStatus() {
   const signed = Boolean(syncDiagnostics.userId);
   const localCount = activeTasks().length;
   const remote = syncDiagnostics.remoteTasks;
+  const dirty = dirtyTaskCount();
   if (!signed) return { tone:'warn', title:'Локальный режим', text:`На этом устройстве ${localCount} задач. Для общего пространства нужен вход по email-коду.` };
+  if (dirty > 0) return { tone:'warn', title:'Ожидает отправки', text:`${dirty} задач ещё отправляются в облако. Приложение будет повторять отправку автоматически.` };
   if (remote === null || remote === undefined) return { tone:'warn', title:'Вход выполнен', text:'Облако ещё не проверено. Нажмите «Проверить облако».' };
   return { tone:'ok', title:'Облако активно', text:`Локально ${localCount} задач · в облаке ${remote} задач.` };
 }
@@ -1313,7 +1356,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
+    <div class="notice"><strong>Версия 2.9.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1356,6 +1399,7 @@ function renderSettings() {
         <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
         <div><strong>режим:</strong> личное пространство</div>
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
+        <div><strong>ожидает отправки:</strong> ${dirtyTaskCount()}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
         <div><strong>последняя локальная задача:</strong> ${escapeHtml(syncDiagnostics.lastLocalTask || latestLocalTaskTitle())}</div>
@@ -1366,6 +1410,7 @@ function renderSettings() {
       </div>
       <div class="task-actions sync-actions">
         <button class="primary" id="syncTasksBothWays" type="button">Синхронизировать задачи</button>
+        <button class="primary" id="sendDirtyTasks" type="button">Отправить ожидающие</button>
         <button class="ghost" id="pushTasksOnly" type="button">Выгрузить задачи</button>
         <button class="ghost" id="pullTasksOnly" type="button">Загрузить задачи</button>
         <button class="ghost" id="checkLastTaskCloud" type="button">Проверить последнюю задачу</button>
@@ -1824,6 +1869,7 @@ function bindSyncPanelButtons() {
   if ($('pushTasksOnly')) $('pushTasksOnly').onclick = (e) => { e.preventDefault(); pushTasksOnly({ silent:false }); };
   if ($('pullTasksOnly')) $('pullTasksOnly').onclick = (e) => { e.preventDefault(); pullTasksOnly({ silent:false }); };
   if ($('syncTasksBothWays')) $('syncTasksBothWays').onclick = (e) => { e.preventDefault(); syncTasksBothWays({ silent:false }); };
+  if ($('sendDirtyTasks')) $('sendDirtyTasks').onclick = (e) => { e.preventDefault(); pushTasksOnly({ silent:false, onlyDirty: dirtyTaskCount() > 0 }); };
   if ($('checkLastTaskCloud')) $('checkLastTaskCloud').onclick = (e) => { e.preventDefault(); verifyLastTaskInCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
@@ -2258,25 +2304,48 @@ async function refreshTaskSyncDiagnostics(client) {
   }
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
 }
-async function pushTasksOnly({ silent = false } = {}) {
+async function pushTasksOnly({ silent = false, onlyDirty = false } = {}) {
   const client = getSupabaseClient();
   if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
   setSyncState('выгрузка задач в облако...', 'warn');
   syncDiagnostics.lastError = '';
   try {
     const user = await requireSupabaseUser(client);
-    const rows = tasks.map(t => taskToRow(normalizeTask(t), user.id));
-    const { error } = await client.from('tasks').upsert(rows, { onConflict:'id' });
-    if (error) throw error;
+    const source = onlyDirty
+      ? [...dirtyTaskIds].map(id => localTaskById(id)).filter(Boolean)
+      : tasks;
+    const rows = source.map(t => taskToRow(normalizeTask(t), user.id));
+    if (rows.length) {
+      const { error } = await client.from('tasks').upsert(rows, { onConflict:'id' });
+      if (error) throw error;
+    }
+    let confirmed = true;
+    for (const id of [...dirtyTaskIds]) {
+      if (!(await cloudHasTask(client, id))) {
+        confirmed = false;
+        break;
+      }
+    }
     await refreshTaskSyncDiagnostics(client);
     syncDiagnostics.lastPushAt = new Date().toLocaleString('ru-RU');
-    setSyncState(`задачи выгружены · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
+    if (confirmed) {
+      clearDirtyTasks();
+      autoSyncRetryCount = 0;
+      setSyncState(`задачи выгружены · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
+      updateAutoSyncUi('все задачи отправлены в облако', 'ok');
+    } else {
+      setSyncState(`часть задач ещё ожидает отправки · ${dirtyTaskCount()}`, 'warn');
+      updateAutoSyncUi(`повторная отправка: ${dirtyTaskCount()} задач`, 'warn');
+      scheduleReliableRetry('не все задачи подтверждены', 2500);
+    }
     render();
-    return true;
+    return confirmed;
   } catch (e) {
     console.warn(e);
     syncDiagnostics.lastError = e.message;
     setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка выгрузки задач: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
+    updateAutoSyncUi(isAuthNeededError(e) ? 'нужен вход для отправки задач' : 'ошибка отправки · будет повтор', isAuthNeededError(e) ? 'warn' : 'bad');
+    scheduleReliableRetry('ошибка отправки', 4000);
     if (!silent) alert(isAuthNeededError(e) ? friendlyAuthMessage() : e.message);
     render();
     return false;
@@ -2308,7 +2377,8 @@ async function pullTasksOnly({ silent = false } = {}) {
   }
 }
 async function syncTasksBothWays({ silent = false } = {}) {
-  const okPush = await pushTasksOnly({ silent });
+  if (dirtyTaskCount() === 0) markAllTasksDirty();
+  const okPush = await pushTasksOnly({ silent, onlyDirty:false });
   if (!okPush) return false;
   return pullTasksOnly({ silent });
 }
@@ -2415,17 +2485,38 @@ function enqueueAutoTaskSync(reason='изменение задач', delay=700) 
         updateAutoSyncUi('локально сохранено · нужен вход', 'warn');
         return;
       }
-      await syncTasksBothWays({ silent:true });
-      updateAutoSyncUi(`авто: задачи синхронизированы ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
+      const ok = await pushTasksOnly({ silent:true, onlyDirty: dirtyTaskCount() > 0 });
+      if (ok) {
+        await pullTasksOnly({ silent:true });
+        updateAutoSyncUi(`авто: задачи синхронизированы ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
+      }
     } catch (e) {
       console.warn('enqueueAutoTaskSync failed', e);
       syncDiagnostics.lastError = e.message;
       updateAutoSyncUi('ошибка автосинхронизации: ' + e.message, 'bad');
       setSyncState('ошибка автосинхронизации: ' + e.message, 'bad');
+      scheduleReliableRetry('ошибка автообмена', 4000);
       render();
     }
   }, delay);
 }
+function scheduleReliableRetry(reason='ожидает повторной синхронизации', delay=3000) {
+  if (!settings.autoSync || dirtyTaskCount() === 0) return;
+  autoSyncRetryCount += 1;
+  const cappedDelay = Math.min(delay + autoSyncRetryCount * 1000, 15000);
+  clearTimeout(autoTaskSyncTimer);
+  updateAutoSyncUi(`${reason} · повтор ${autoSyncRetryCount}`, 'warn');
+  autoTaskSyncTimer = setTimeout(async () => {
+    const signed = await hasActiveCloudSession();
+    if (!signed) {
+      updateAutoSyncUi('задачи сохранены локально · нужен вход', 'warn');
+      return;
+    }
+    await pushTasksOnly({ silent:true, onlyDirty:true });
+  }, cappedDelay);
+}
+
+
 function enqueueAutoPull(reason='проверка обновлений', delay=500) {
   if (!settings.autoSync) return;
   clearTimeout(autoPullTimer);
