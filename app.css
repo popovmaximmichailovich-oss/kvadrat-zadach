@@ -3482,3 +3482,13 @@ button:disabled {
 #clearAppErrors {
   border-color: rgba(148,163,184,.24);
 }
+
+
+
+/* v2.9.6 Sync Engine Reset */
+#pushAllLocalTasks {
+  border-style: dashed;
+}
+.sync-diagnostics-grid {
+  word-break: break-word;
+}
