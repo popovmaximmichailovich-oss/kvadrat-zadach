@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.7';
+const APP_VERSION = '2.9.8';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1473,7 +1473,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.7</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
+    <div class="notice"><strong>Версия 2.9.8</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -2484,7 +2484,7 @@ function mergeCloudIntoLocal(cloudTasks, { preserveLocal = true } = {}) {
     });
   }
   tasks = [...byId.values()].sort((a,b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
-  localStorage.setItem(TASKS_KEY, JSON.stringify(tasks));
+  saveTasks();
 }
 async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = {}) {
   const ids = (onlyDirty && typeof dirtyTaskCount === 'function' && dirtyTaskCount()) ? [...dirtyTaskIds] : activeTasks().map(t => t.id);
