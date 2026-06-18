@@ -1,4 +1,4 @@
-const APP_VERSION = '2.10.0';
+const APP_VERSION = '2.10.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -1477,7 +1477,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.10.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">ручная синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.10.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">ручная синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1521,7 +1521,7 @@ function renderSettings() {
         <div><strong>режим:</strong> личное пространство</div>
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
         <div><strong>ожидает отправки:</strong> ${dirtyTaskCount()}</div>
-        <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
+        <div><strong>активных задач в облаке:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
         <div><strong>последняя локальная задача:</strong> ${escapeHtml(latestLocalTaskTitle())}</div>
         <div><strong>последняя задача в облаке:</strong> ${escapeHtml(syncDiagnostics.lastCloudTask || 'не проверено')}</div>
@@ -2470,6 +2470,19 @@ async function getActiveCloudUser(client) {
   syncDiagnostics.email = user.email || settings.email || '';
   return user;
 }
+
+function activeCloudTasksList(list) {
+  return (list || []).filter(t => !t.deletedAt);
+}
+function latestActiveCloudTaskTitle(list) {
+  const t = activeCloudTasksList(list)[0];
+  return t ? t.title : 'нет активных задач';
+}
+function clearSyncErrorsAfterSuccess() {
+  try { localStorage.removeItem(APP_ERROR_LOG_KEY); } catch {}
+  syncDiagnostics.lastError = '';
+}
+
 async function fetchCloudTasksForUser(client, userId) {
   const { data, error } = await client.from('tasks')
     .select('*')
@@ -2543,16 +2556,18 @@ async function hardSyncTasks({ silent = false, pushAll = false } = {}) {
     }
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
     mergeCloudIntoLocal(cloudTasks, { preserveLocal: true });
+    const activeCloud = activeCloudTasksList(cloudTasks);
     syncDiagnostics.localTasks = activeTasks().length;
-    syncDiagnostics.remoteTasks = cloudTasks.length;
+    syncDiagnostics.remoteTasks = activeCloud.length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
     syncDiagnostics.lastPushAt = syncDiagnostics.lastCheckedAt;
     syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    syncDiagnostics.lastCloudTask = cloudTasks[0]?.title || 'нет задач';
-    syncDiagnostics.lastCloudTaskAt = cloudTasks[0]?.updatedAt || cloudTasks[0]?.createdAt || '';
+    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
+    syncDiagnostics.lastCloudTaskAt = activeCloud[0]?.updatedAt || activeCloud[0]?.createdAt || '';
     const tone = pushResult.failed.length ? 'warn' : 'ok';
-    const text = `синхронизация выполнена · было локально ${beforeLocal} · стало ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks} · отправлено ${pushResult.sent}/${pushResult.attempted}`;
+    if (!pushResult.failed.length) clearSyncErrorsAfterSuccess();
+    const text = `синхронизация выполнена · было локально ${beforeLocal} · стало ${syncDiagnostics.localTasks} · активных в облаке ${syncDiagnostics.remoteTasks} · отправлено ${pushResult.sent}/${pushResult.attempted}`;
     setSyncState(text, tone);
     addSyncAudit('успешно', text);
     render();
@@ -2580,14 +2595,16 @@ async function pullTasksOnly({ silent = false } = {}) {
     const user = await getActiveCloudUser(client);
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
     mergeCloudIntoLocal(cloudTasks, { preserveLocal: true });
+    const activeCloud = activeCloudTasksList(cloudTasks);
     syncDiagnostics.localTasks = activeTasks().length;
-    syncDiagnostics.remoteTasks = cloudTasks.length;
+    syncDiagnostics.remoteTasks = activeCloud.length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
     syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
     syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    syncDiagnostics.lastCloudTask = cloudTasks[0]?.title || 'нет задач';
-    addSyncAudit('загрузка', `из облака получено ${cloudTasks.length}, локально стало ${syncDiagnostics.localTasks}`);
-    setSyncState(`загружено из облака · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
+    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
+    clearSyncErrorsAfterSuccess();
+    addSyncAudit('загрузка', `из облака получено активных ${activeCloud.length}, локально стало ${syncDiagnostics.localTasks}`);
+    setSyncState(`загружено из облака · локально ${syncDiagnostics.localTasks} · активных в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
     render();
     return true;
   } catch (e) {
@@ -2618,13 +2635,15 @@ async function verifyLastTaskInCloud() {
     await syncPendingBeforeCloudRead('проверка последней задачи');
     const user = await getActiveCloudUser(client);
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
+    const activeCloud = activeCloudTasksList(cloudTasks);
     syncDiagnostics.localTasks = activeTasks().length;
-    syncDiagnostics.remoteTasks = cloudTasks.length;
-    syncDiagnostics.lastCloudTask = cloudTasks[0]?.title || 'нет задач';
+    syncDiagnostics.remoteTasks = activeCloud.length;
+    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    clearSyncErrorsAfterSuccess();
     const text = [
       `Локально задач: ${syncDiagnostics.localTasks}`,
-      `В облаке задач: ${syncDiagnostics.remoteTasks}`,
+      `В облаке активных задач: ${syncDiagnostics.remoteTasks}`,
       `Последняя локальная: ${syncDiagnostics.lastLocalTask || latestLocalTaskTitle() || 'нет'}`,
       `Последняя в облаке: ${syncDiagnostics.lastCloudTask || 'нет'}`,
       `user_id: ${syncDiagnostics.userId || user.id || 'не определён'}`,
@@ -2653,13 +2672,14 @@ async function checkCloudConnection() {
     await syncPendingBeforeCloudRead('проверка облака');
     const user = await getActiveCloudUser(client);
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
-    syncDiagnostics.remoteTasks = cloudTasks.length;
+    const activeCloud = activeCloudTasksList(cloudTasks);
+    syncDiagnostics.remoteTasks = activeCloud.length;
     syncDiagnostics.localTasks = activeTasks().length;
     syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
-    syncDiagnostics.lastCloudTask = cloudTasks[0]?.title || 'нет задач';
-    syncDiagnostics.lastError = '';
-    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${cloudTasks.length}`, 'ok');
-    addSyncAudit('проверка облака', `в облаке ${cloudTasks.length}, последняя: ${syncDiagnostics.lastCloudTask}`);
+    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
+    clearSyncErrorsAfterSuccess();
+    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · активных задач в облаке: ${activeCloud.length}`, 'ok');
+    addSyncAudit('проверка облака', `активных в облаке ${activeCloud.length}, последняя: ${syncDiagnostics.lastCloudTask}`);
     render();
   } catch (e) {
     const msg = e?.message || String(e);
