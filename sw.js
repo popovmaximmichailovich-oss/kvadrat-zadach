@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-9-8-sync-storage-hotfix';
+const CACHE = 'kvadrat-zadach-v2-9-9-quick-add-sync-fix';
 const ASSETS = [
   './',
   './index.html',

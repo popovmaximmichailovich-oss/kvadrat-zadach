@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.8';
+const APP_VERSION = '2.9.9';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -600,7 +600,13 @@ function addTask() {
   }
 
   saveTasks();
+  syncDiagnostics.localTasks = activeTasks().length;
+  syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
+  syncDiagnostics.lastError = '';
+  setSyncState('задача создана · отправляем в облако', 'warn');
+  addSyncAudit('быстрая задача', `создана: ${t.title}`);
   enqueueAutoTaskSync('создана новая задача', 250);
+  setTimeout(() => hardSyncTasks({ silent:true, pushAll:false }), 900);
 }
 function deleteTask(id) { updateTask(id, { deletedAt: nowISO() }); }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -1178,7 +1184,7 @@ function safeSyncBadgeStatus() {
 function renderSafeSyncStatusCard() {
   const s = safeSyncBadgeStatus();
   return `<section class="safe-sync-card card sync-${s.tone}">
-    <div><span class="view-kicker">автосинхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p><p class="auto-sync-note">Синхронизация задач пересобрана: приложение построчно отправляет локальные изменения и затем заново читает все задачи из облака.</p></div>
+    <div><span class="view-kicker">автосинхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p><p class="auto-sync-note">Синхронизация задач пересобрана: быстрые задачи тоже отправляются в облако, затем приложение заново читает все задачи из Supabase.</p></div>
     <div class="task-actions">
       <button class="primary compact-primary" id="forceAutoSyncNow" type="button">Синхронизировать сейчас</button>
       <button class="${syncDiagnostics.userId ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${syncDiagnostics.userId ? 'Открыть синхронизацию' : 'Войти по коду'}</button>
@@ -1473,7 +1479,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.8</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
+    <div class="notice"><strong>Версия 2.9.9</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -2560,6 +2566,7 @@ async function pushTasksOnly({ silent = false, onlyDirty = true, forceAll = fals
   return hardSyncTasks({ silent, pushAll: forceAll || !onlyDirty });
 }
 async function pullTasksOnly({ silent = false } = {}) {
+  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) return hardSyncTasks({ silent, pushAll:false });
   const client = getSupabaseClient();
   if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
   setSyncState('загрузка задач из облака...', 'warn');
@@ -2590,10 +2597,19 @@ async function pullTasksOnly({ silent = false } = {}) {
 async function syncTasksBothWays({ silent = false, forceAll = false } = {}) {
   return hardSyncTasks({ silent, pushAll: forceAll });
 }
+
+async function syncPendingBeforeCloudRead(reason = 'проверка') {
+  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
+    addSyncAudit(reason, `перед проверкой отправляем ожидающие задачи: ${dirtyTaskCount()}`);
+    await hardSyncTasks({ silent:true, pushAll:false });
+  }
+}
+
 async function verifyLastTaskInCloud() {
   const client = getSupabaseClient();
   if (!client) return alert('Облачное подключение временно недоступно.');
   try {
+    await syncPendingBeforeCloudRead('проверка последней задачи');
     const user = await getActiveCloudUser(client);
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
     syncDiagnostics.localTasks = activeTasks().length;
@@ -2628,6 +2644,7 @@ async function checkCloudConnection() {
   if (!client) return alert('Облачное подключение временно недоступно.');
   setSyncState('проверка облака...', 'warn');
   try {
+    await syncPendingBeforeCloudRead('проверка облака');
     const user = await getActiveCloudUser(client);
     const cloudTasks = await fetchCloudTasksForUser(client, user.id);
     syncDiagnostics.remoteTasks = cloudTasks.length;
