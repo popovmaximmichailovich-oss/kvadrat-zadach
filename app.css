@@ -3425,3 +3425,29 @@ button.stat {
     width:100% !important;
   }
 }
+
+
+
+/* v2.9.3 Auto Sync Hard Mode */
+.auto-sync-note {
+  margin-top: 8px !important;
+  color: var(--muted);
+  font-size: 13px;
+}
+#autoSyncInline {
+  margin-left: 8px;
+  display: inline-flex;
+  vertical-align: middle;
+}
+.safe-sync-card .task-actions {
+  align-items: stretch;
+}
+.safe-sync-card #forceAutoSyncNow {
+  min-width: 210px;
+}
+@media (max-width: 860px) {
+  .safe-sync-card #forceAutoSyncNow {
+    min-width: 0;
+    width: 100%;
+  }
+}

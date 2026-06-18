@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.2';
+const APP_VERSION = '2.9.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -35,6 +35,9 @@ let currentView = 'commander';
 let deferredPrompt = null;
 let autoSyncTimer = null;
 let syncInProgress = false;
+let autoTaskSyncTimer = null;
+let autoPullTimer = null;
+let lastAutoSyncReason = '';
 let supabaseClientInstance = null;
 let supabaseClientKey = '';
 let selectedQuickProjectId = '';
@@ -439,9 +442,7 @@ function addTask() {
   }
 
   saveTasks();
-  if (settings.autoSync && syncDiagnostics.userId) {
-    setTimeout(() => pushTasksOnly({ silent:true }), 300);
-  }
+  enqueueAutoTaskSync('создана новая задача', 250);
 }
 function deleteTask(id) { updateTask(id, { deletedAt: nowISO() }); }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -1017,14 +1018,14 @@ function safeSyncBadgeStatus() {
 function renderSafeSyncStatusCard() {
   const s = safeSyncBadgeStatus();
   return `<section class="safe-sync-card card sync-${s.tone}">
-    <div><span class="view-kicker">синхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p></div>
+    <div><span class="view-kicker">автосинхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p><p class="auto-sync-note">Автообмен включён: телефон сам отправляет новые задачи в облако, компьютер сам забирает обновления.</p></div>
     <div class="task-actions">
+      <button class="primary compact-primary" id="forceAutoSyncNow" type="button">Синхронизировать сейчас</button>
       <button class="${syncDiagnostics.userId ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${syncDiagnostics.userId ? 'Открыть синхронизацию' : 'Войти по коду'}</button>
       <button class="ghost compact-primary" data-action="checkCloudFromHome" type="button">Проверить облако</button>
     </div>
   </section>`;
 }
-
 function renderHomeAuthStatusCard() {
   const signedIn = Boolean(syncDiagnostics.userId);
   const status = safeSyncBadgeStatus();
@@ -1312,7 +1313,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.9.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1826,6 +1827,7 @@ function bindSyncPanelButtons() {
   if ($('checkLastTaskCloud')) $('checkLastTaskCloud').onclick = (e) => { e.preventDefault(); verifyLastTaskInCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
+  if ($('forceAutoSyncNow')) $('forceAutoSyncNow').onclick = (e) => { e.preventDefault(); forceAutoSyncNow(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
 function openEdit(id) {
@@ -2380,12 +2382,81 @@ async function pushToCloud() {
   await performSync({ silent:false, mode:'push' });
 }
 
-function scheduleAutoSync(delay = 1600) {
-  if (!settings.autoSync || !settings.supabaseUrl || !settings.supabaseAnonKey) return;
-  clearTimeout(autoSyncTimer);
-  setSyncState('ожидает автосинхронизации', 'warn');
-  autoSyncTimer = setTimeout(() => performSync({ silent: true }), delay);
+
+function updateAutoSyncUi(text, tone='idle') {
+  lastAutoSyncReason = text || lastAutoSyncReason || '';
+  const el = $('autoSyncInline');
+  if (el) {
+    el.textContent = text || 'автосинхронизация готова';
+    el.className = `stat ${tone === 'ok' ? 'good' : tone === 'bad' ? 'bad' : tone === 'warn' ? 'warn' : ''}`;
+  }
 }
+async function hasActiveCloudSession() {
+  const client = getSupabaseClient();
+  if (!client) return false;
+  const session = await getCurrentAuthSession(client);
+  if (session?.user) {
+    syncDiagnostics.userId = session.user.id || syncDiagnostics.userId || '';
+    syncDiagnostics.email = session.user.email || settings.email || syncDiagnostics.email || '';
+    return true;
+  }
+  return false;
+}
+function enqueueAutoTaskSync(reason='изменение задач', delay=700) {
+  if (!settings.autoSync) return;
+  clearTimeout(autoTaskSyncTimer);
+  setSyncState(`автосинхронизация: ${reason}`, 'warn');
+  updateAutoSyncUi(`ожидает отправки: ${reason}`, 'warn');
+  autoTaskSyncTimer = setTimeout(async () => {
+    try {
+      const signed = await hasActiveCloudSession();
+      if (!signed) {
+        setSyncState('локально сохранено · нужен вход для облака', 'warn');
+        updateAutoSyncUi('локально сохранено · нужен вход', 'warn');
+        return;
+      }
+      await syncTasksBothWays({ silent:true });
+      updateAutoSyncUi(`авто: задачи синхронизированы ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
+    } catch (e) {
+      console.warn('enqueueAutoTaskSync failed', e);
+      syncDiagnostics.lastError = e.message;
+      updateAutoSyncUi('ошибка автосинхронизации: ' + e.message, 'bad');
+      setSyncState('ошибка автосинхронизации: ' + e.message, 'bad');
+      render();
+    }
+  }, delay);
+}
+function enqueueAutoPull(reason='проверка обновлений', delay=500) {
+  if (!settings.autoSync) return;
+  clearTimeout(autoPullTimer);
+  autoPullTimer = setTimeout(async () => {
+    try {
+      const signed = await hasActiveCloudSession();
+      if (!signed) return;
+      await pullTasksOnly({ silent:true });
+      updateAutoSyncUi(`авто: загружены обновления ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
+    } catch (e) {
+      console.warn('enqueueAutoPull failed', e);
+      syncDiagnostics.lastError = e.message;
+      updateAutoSyncUi('ошибка загрузки обновлений: ' + e.message, 'bad');
+    }
+  }, delay);
+}
+async function forceAutoSyncNow() {
+  const signed = await hasActiveCloudSession();
+  if (!signed) {
+    setSyncState('нужен вход по email', 'warn');
+    alert('Сначала войдите по коду на этом устройстве.');
+    render();
+    return false;
+  }
+  return syncTasksBothWays({ silent:false });
+}
+
+function scheduleAutoSync(delay = 900) {
+  enqueueAutoTaskSync('локальное изменение', delay);
+}
+
 async function sendMagicLink() {
   settings.supabaseUrl = normalizeSupabaseUrl($('syncUrl')?.value.trim() || DEFAULT_SUPABASE_URL);
   settings.supabaseAnonKey = $('syncKey')?.value.trim() || DEFAULT_SUPABASE_PUBLISHABLE_KEY;
@@ -2441,6 +2512,7 @@ async function verifyEmailCode() {
   syncDiagnostics.lastError = '';
   setSyncState(`вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
   await refreshAuthState({ renderNow:false });
+  await syncTasksBothWays({ silent:true });
   render();
   alert('Вход выполнен. Это устройство подключено к вашему личному пространству.');
 }
@@ -2676,9 +2748,12 @@ function boot() {
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; $('installBtn').classList.remove('hidden'); });
   $('installBtn').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; $('installBtn').classList.add('hidden'); };
   initAppUpdateMechanism();
-  document.addEventListener('visibilitychange', async () => { if (!document.hidden && await refreshAuthState({ renderNow:false })) performSync({ silent: true }); });
-  setInterval(async () => { if (await refreshAuthState({ renderNow:false })) performSync({ silent: true }); }, 120000);
+  window.addEventListener('online', () => enqueueAutoTaskSync('сеть восстановлена', 200));
+  window.addEventListener('pageshow', () => enqueueAutoPull('страница открыта', 350));
+  window.addEventListener('focus', () => enqueueAutoPull('окно активно', 350));
+  document.addEventListener('visibilitychange', async () => { if (!document.hidden) enqueueAutoPull('возврат в приложение', 250); });
+  setInterval(() => enqueueAutoPull('периодическая проверка', 400), 30000);
   render();
-  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) pullTasksOnly({ silent:true }); }, 2000);
+  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) syncTasksBothWays({ silent:true }); }, 1200);
 }
 boot();
