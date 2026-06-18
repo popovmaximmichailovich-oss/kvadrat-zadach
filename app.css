@@ -3510,3 +3510,13 @@ button:disabled {
 
 
 /* v2.9.9 Quick Add Sync Fix */
+
+
+
+/* v2.10.0 Manual Sync Stabilization */
+.safe-sync-card .auto-sync-note {
+  color: var(--muted);
+}
+#syncTasksBothWays {
+  box-shadow: 0 0 0 4px rgba(34,197,94,.14);
+}

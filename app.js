@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.9';
+const APP_VERSION = '2.10.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -603,10 +603,8 @@ function addTask() {
   syncDiagnostics.localTasks = activeTasks().length;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
   syncDiagnostics.lastError = '';
-  setSyncState('задача создана · отправляем в облако', 'warn');
-  addSyncAudit('быстрая задача', `создана: ${t.title}`);
-  enqueueAutoTaskSync('создана новая задача', 250);
-  setTimeout(() => hardSyncTasks({ silent:true, pushAll:false }), 900);
+  setSyncState('задача создана локально · нажмите «Синхронизировать задачи»', 'warn');
+  addSyncAudit('быстрая задача', `создана локально: ${t.title}`);
 }
 function deleteTask(id) { updateTask(id, { deletedAt: nowISO() }); }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -1184,7 +1182,7 @@ function safeSyncBadgeStatus() {
 function renderSafeSyncStatusCard() {
   const s = safeSyncBadgeStatus();
   return `<section class="safe-sync-card card sync-${s.tone}">
-    <div><span class="view-kicker">автосинхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p><p class="auto-sync-note">Синхронизация задач пересобрана: быстрые задачи тоже отправляются в облако, затем приложение заново читает все задачи из Supabase.</p></div>
+    <div><span class="view-kicker">синхронизация</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.text)}</p><p class="auto-sync-note">Стабильный режим: создайте или удалите задачу, затем нажмите «Синхронизировать задачи».</p></div>
     <div class="task-actions">
       <button class="primary compact-primary" id="forceAutoSyncNow" type="button">Синхронизировать сейчас</button>
       <button class="${syncDiagnostics.userId ? 'ghost' : 'primary'} compact-primary" data-action="openSyncFromStats" type="button">${syncDiagnostics.userId ? 'Открыть синхронизацию' : 'Войти по коду'}</button>
@@ -1479,7 +1477,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.9</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">автообмен включён</span></div>
+    <div class="notice"><strong>Версия 2.10.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">ручная синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1525,7 +1523,7 @@ function renderSettings() {
         <div><strong>ожидает отправки:</strong> ${dirtyTaskCount()}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
-        <div><strong>последняя локальная задача:</strong> ${escapeHtml(syncDiagnostics.lastLocalTask || latestLocalTaskTitle())}</div>
+        <div><strong>последняя локальная задача:</strong> ${escapeHtml(latestLocalTaskTitle())}</div>
         <div><strong>последняя задача в облаке:</strong> ${escapeHtml(syncDiagnostics.lastCloudTask || 'не проверено')}</div>
         <div><strong>последняя выгрузка:</strong> ${syncDiagnostics.lastPushAt || 'не было'}</div>
         <div><strong>последняя загрузка:</strong> ${syncDiagnostics.lastPullAt || 'не было'}</div>
@@ -2000,7 +1998,7 @@ function bindSyncPanelButtons() {
   if ($('pushTasksOnly')) $('pushTasksOnly').onclick = (e) => { e.preventDefault(); pushTasksOnly({ silent:false, onlyDirty:true }); };
   if ($('pushAllLocalTasks')) $('pushAllLocalTasks').onclick = (e) => { e.preventDefault(); syncTasksBothWays({ silent:false, forceAll:true }); };
   if ($('pullTasksOnly')) $('pullTasksOnly').onclick = (e) => { e.preventDefault(); pullTasksOnly({ silent:false }); };
-  if ($('syncTasksBothWays')) $('syncTasksBothWays').onclick = (e) => { e.preventDefault(); syncTasksBothWays({ silent:false }); };
+  if ($('syncTasksBothWays')) $('syncTasksBothWays').onclick = (e) => { e.preventDefault(); syncTasksBothWays({ silent:false, forceAll:true }); };
   if ($('sendDirtyTasks')) $('sendDirtyTasks').onclick = (e) => { e.preventDefault(); pushTasksOnly({ silent:false, onlyDirty:true }); };
   if ($('checkLastTaskCloud')) $('checkLastTaskCloud').onclick = (e) => { e.preventDefault(); verifyLastTaskInCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
@@ -2476,10 +2474,18 @@ async function fetchCloudTasksForUser(client, userId) {
   const { data, error } = await client.from('tasks')
     .select('*')
     .eq('user_id', userId)
-    .order('updated_at', { ascending:false });
+    .order('created_at', { ascending:false });
   if (error) throw error;
-  return (data || []).map(rowToTask).map(normalizeTask);
+  return (data || [])
+    .map(rowToTask)
+    .map(normalizeTask)
+    .sort((a,b) => {
+      const ad = String(a.updatedAt || a.createdAt || '');
+      const bd = String(b.updatedAt || b.createdAt || '');
+      return bd.localeCompare(ad);
+    });
 }
+
 function mergeCloudIntoLocal(cloudTasks, { preserveLocal = true } = {}) {
   const byId = new Map();
   (cloudTasks || []).forEach(t => byId.set(t.id, normalizeTask(t)));
@@ -2698,7 +2704,7 @@ function updateAutoSyncUi(text, tone='idle') {
   lastAutoSyncReason = text || lastAutoSyncReason || '';
   const el = $('autoSyncInline');
   if (el) {
-    el.textContent = text || 'автосинхронизация готова';
+    el.textContent = text || 'синхронизация готова';
     el.className = `stat ${tone === 'ok' ? 'good' : tone === 'bad' ? 'bad' : tone === 'warn' ? 'warn' : ''}`;
   }
 }
@@ -2716,7 +2722,7 @@ async function hasActiveCloudSession() {
 function enqueueAutoTaskSync(reason='изменение задач', delay=700) {
   if (!settings.autoSync) return;
   clearTimeout(autoTaskSyncTimer);
-  setSyncState(`автосинхронизация: ${reason}`, 'warn');
+  setSyncState(`синхронизация: ${reason}`, 'warn');
   updateAutoSyncUi(`ожидает отправки: ${reason}`, 'warn');
   autoTaskSyncTimer = setTimeout(async () => {
     try {
@@ -2730,7 +2736,7 @@ function enqueueAutoTaskSync(reason='изменение задач', delay=700) 
       updateAutoSyncUi(`авто: задачи проверены ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
     } catch (e) {
       console.warn('enqueueAutoTaskSync failed', e);
-      recordAppError('автосинхронизация', e);
+      recordAppError('синхронизация', e);
       syncDiagnostics.lastError = e.message;
       updateAutoSyncUi('ошибка автосинхронизации: ' + e.message, 'bad');
       setSyncState('ошибка автосинхронизации: ' + e.message, 'bad');
@@ -2780,11 +2786,13 @@ async function forceAutoSyncNow() {
     render();
     return false;
   }
-  return syncTasksBothWays({ silent:false });
+  return syncTasksBothWays({ silent:false, forceAll:true });
 }
 
 function scheduleAutoSync(delay = 900) {
-  enqueueAutoTaskSync('локальное изменение', delay);
+  // v2.10.0: фоновые автоперерисовки отключены, чтобы iPhone не дёргал страницу.
+  // Локальные изменения сохраняются и помечаются на отправку.
+  updateAutoSyncUi('изменения сохранены локально · нажмите «Синхронизировать задачи»', 'warn');
 }
 
 async function sendMagicLink() {
@@ -3108,12 +3116,6 @@ function boot() {
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; $('installBtn').classList.remove('hidden'); });
   $('installBtn').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; $('installBtn').classList.add('hidden'); };
   initAppUpdateMechanism();
-  window.addEventListener('online', () => enqueueAutoTaskSync('сеть восстановлена', 200));
-  window.addEventListener('pageshow', () => enqueueAutoPull('страница открыта', 350));
-  window.addEventListener('focus', () => enqueueAutoPull('окно активно', 350));
-  document.addEventListener('visibilitychange', async () => { if (!document.hidden) enqueueAutoPull('возврат в приложение', 250); });
-  setInterval(() => enqueueAutoPull('периодическая проверка', 400), 30000);
   render();
-  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) syncTasksBothWays({ silent:true }); }, 1200);
 }
 boot();
