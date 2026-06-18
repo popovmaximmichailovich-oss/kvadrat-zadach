@@ -1,4 +1,4 @@
-const APP_VERSION = '2.9.1';
+const APP_VERSION = '2.9.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -39,7 +39,7 @@ let supabaseClientInstance = null;
 let supabaseClientKey = '';
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
-let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '' };
+let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '', lastPushAt: '', lastPullAt: '', lastLocalTask: '', lastCloudTask: '', lastCloudTaskAt: '' };
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -439,6 +439,9 @@ function addTask() {
   }
 
   saveTasks();
+  if (settings.autoSync && syncDiagnostics.userId) {
+    setTimeout(() => pushTasksOnly({ silent:true }), 300);
+  }
 }
 function deleteTask(id) { updateTask(id, { deletedAt: nowISO() }); }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -1309,7 +1312,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email на компьютере и на iPhone — данные будут синхронизироваться через облако.</p></div>
-    <div class="notice"><strong>Версия 2.9.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
+    <div class="notice"><strong>Версия 2.9.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}.</div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
 
@@ -1354,12 +1357,18 @@ function renderSettings() {
         <div><strong>локально задач:</strong> ${activeTasks().length}</div>
         <div><strong>в облаке задач:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
         <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
+        <div><strong>последняя локальная задача:</strong> ${escapeHtml(syncDiagnostics.lastLocalTask || latestLocalTaskTitle())}</div>
+        <div><strong>последняя задача в облаке:</strong> ${escapeHtml(syncDiagnostics.lastCloudTask || 'не проверено')}</div>
+        <div><strong>последняя выгрузка:</strong> ${syncDiagnostics.lastPushAt || 'не было'}</div>
+        <div><strong>последняя загрузка:</strong> ${syncDiagnostics.lastPullAt || 'не было'}</div>
         ${syncDiagnostics.lastError ? `<div><strong>последняя ошибка:</strong> ${escapeHtml(syncDiagnostics.lastError)}</div>` : ''}
       </div>
       <div class="task-actions sync-actions">
-        <button class="primary" id="checkCloud" type="button">Проверить облако</button>
-        <button class="ghost" id="pullCloud" type="button">Загрузить из облака</button>
-        <button class="ghost" id="pushCloud" type="button">Выгрузить в облако</button>
+        <button class="primary" id="syncTasksBothWays" type="button">Синхронизировать задачи</button>
+        <button class="ghost" id="pushTasksOnly" type="button">Выгрузить задачи</button>
+        <button class="ghost" id="pullTasksOnly" type="button">Загрузить задачи</button>
+        <button class="ghost" id="checkLastTaskCloud" type="button">Проверить последнюю задачу</button>
+        <button class="ghost" id="checkCloud" type="button">Проверить облако</button>
         <button class="danger" id="logoutCloud" type="button">Выйти из облака</button>
         <button class="ghost" id="runSelfCheck" type="button">Самопроверка</button>
       </div>
@@ -1811,6 +1820,10 @@ function bindSyncPanelButtons() {
   if (checkBtn) checkBtn.onclick = (e) => { e.preventDefault(); checkCloudConnection(); };
   if (pullBtn) pullBtn.onclick = (e) => { e.preventDefault(); pullFromCloud(); };
   if (pushBtn) pushBtn.onclick = (e) => { e.preventDefault(); pushToCloud(); };
+  if ($('pushTasksOnly')) $('pushTasksOnly').onclick = (e) => { e.preventDefault(); pushTasksOnly({ silent:false }); };
+  if ($('pullTasksOnly')) $('pullTasksOnly').onclick = (e) => { e.preventDefault(); pullTasksOnly({ silent:false }); };
+  if ($('syncTasksBothWays')) $('syncTasksBothWays').onclick = (e) => { e.preventDefault(); syncTasksBothWays({ silent:false }); };
+  if ($('checkLastTaskCloud')) $('checkLastTaskCloud').onclick = (e) => { e.preventDefault(); verifyLastTaskInCloud(); };
   if (logoutBtn) logoutBtn.onclick = (e) => { e.preventDefault(); logoutCloud(); };
   if (legacySignOutBtn) legacySignOutBtn.onclick = (e) => { e.preventDefault(); signOut(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
@@ -2218,18 +2231,118 @@ async function safeSelect(client, table, mapper) {
   }
   return (data || []).map(mapper);
 }
+
+function latestLocalTaskTitle() {
+  const t = activeTasks().slice().sort((a,b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))[0];
+  return t ? `${t.title} · ${dateLabel((t.updatedAt || t.createdAt || '').slice(0,10))}` : 'нет задач';
+}
+async function getLatestCloudTask(client) {
+  const { data, error } = await client.from('tasks').select('id,title,updated_at,created_at').order('updated_at', { ascending:false }).limit(1);
+  if (error) throw error;
+  return (data || [])[0] || null;
+}
+async function refreshTaskSyncDiagnostics(client) {
+  syncDiagnostics.localTasks = activeTasks().length;
+  syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
+  syncDiagnostics.remoteTasks = await countCloudTasks(client);
+  try {
+    const latest = await getLatestCloudTask(client);
+    syncDiagnostics.lastCloudTask = latest ? latest.title : 'нет задач';
+    syncDiagnostics.lastCloudTaskAt = latest ? (latest.updated_at || latest.created_at || '') : '';
+  } catch (e) {
+    syncDiagnostics.lastCloudTask = 'не удалось проверить';
+    syncDiagnostics.lastCloudTaskAt = '';
+    syncDiagnostics.lastError = e.message;
+  }
+  syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+}
+async function pushTasksOnly({ silent = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
+  setSyncState('выгрузка задач в облако...', 'warn');
+  syncDiagnostics.lastError = '';
+  try {
+    const user = await requireSupabaseUser(client);
+    const rows = tasks.map(t => taskToRow(normalizeTask(t), user.id));
+    const { error } = await client.from('tasks').upsert(rows, { onConflict:'id' });
+    if (error) throw error;
+    await refreshTaskSyncDiagnostics(client);
+    syncDiagnostics.lastPushAt = new Date().toLocaleString('ru-RU');
+    setSyncState(`задачи выгружены · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
+    render();
+    return true;
+  } catch (e) {
+    console.warn(e);
+    syncDiagnostics.lastError = e.message;
+    setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка выгрузки задач: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
+    if (!silent) alert(isAuthNeededError(e) ? friendlyAuthMessage() : e.message);
+    render();
+    return false;
+  }
+}
+async function pullTasksOnly({ silent = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) { if (!silent) alert('Облачное подключение временно недоступно.'); return false; }
+  setSyncState('загрузка задач из облака...', 'warn');
+  syncDiagnostics.lastError = '';
+  try {
+    await requireSupabaseUser(client);
+    const { data, error } = await client.from('tasks').select('*').order('updated_at', { ascending:false });
+    if (error) throw error;
+    mergeTasks((data || []).map(rowToTask));
+    persistAll({ renderNow:false, sync:false });
+    await refreshTaskSyncDiagnostics(client);
+    syncDiagnostics.lastPullAt = new Date().toLocaleString('ru-RU');
+    setSyncState(`задачи загружены · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
+    render();
+    return true;
+  } catch (e) {
+    console.warn(e);
+    syncDiagnostics.lastError = e.message;
+    setSyncState(isAuthNeededError(e) ? 'нужен вход по email' : 'ошибка загрузки задач: ' + e.message, isAuthNeededError(e) ? 'warn' : 'bad');
+    if (!silent) alert(isAuthNeededError(e) ? friendlyAuthMessage() : e.message);
+    render();
+    return false;
+  }
+}
+async function syncTasksBothWays({ silent = false } = {}) {
+  const okPush = await pushTasksOnly({ silent });
+  if (!okPush) return false;
+  return pullTasksOnly({ silent });
+}
+async function verifyLastTaskInCloud() {
+  const client = getSupabaseClient();
+  if (!client) return alert('Облачное подключение временно недоступно.');
+  try {
+    await requireSupabaseUser(client);
+    await refreshTaskSyncDiagnostics(client);
+    const text = [
+      `Локально задач: ${syncDiagnostics.localTasks}`,
+      `В облаке задач: ${syncDiagnostics.remoteTasks}`,
+      `Последняя локальная: ${syncDiagnostics.lastLocalTask || 'нет'}`,
+      `Последняя в облаке: ${syncDiagnostics.lastCloudTask || 'нет'}`,
+      `user_id: ${syncDiagnostics.userId || 'не определён'}`
+    ].join('\n');
+    setSyncState('диагностика задач выполнена', 'ok');
+    render();
+    alert(text);
+  } catch (e) {
+    syncDiagnostics.lastError = e.message;
+    setSyncState('ошибка диагностики задач: ' + e.message, 'bad');
+    render();
+    alert(e.message);
+  }
+}
+
 async function checkCloudConnection() {
   const client = getSupabaseClient();
   if (!client) return alert('Облачное подключение временно недоступно.');
   setSyncState('проверка облака...', 'warn');
   try {
     const user = await requireSupabaseUser(client);
-    const cloudTasks = await countCloudTasks(client);
-    syncDiagnostics.remoteTasks = cloudTasks;
-    syncDiagnostics.localTasks = activeTasks().length;
-    syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
+    await refreshTaskSyncDiagnostics(client);
     syncDiagnostics.lastError = '';
-    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${cloudTasks}`, 'ok');
+    setSyncState(`облако доступно · user ${user.id.slice(0,8)} · задач в облаке: ${syncDiagnostics.remoteTasks}`, 'ok');
     render();
   } catch (e) {
     syncDiagnostics.lastError = e.message;
@@ -2566,6 +2679,6 @@ function boot() {
   document.addEventListener('visibilitychange', async () => { if (!document.hidden && await refreshAuthState({ renderNow:false })) performSync({ silent: true }); });
   setInterval(async () => { if (await refreshAuthState({ renderNow:false })) performSync({ silent: true }); }, 120000);
   render();
-  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) performSync({ silent: true }); }, 2000);
+  setTimeout(async () => { if (await refreshAuthState({ renderNow:false })) pullTasksOnly({ silent:true }); }, 2000);
 }
 boot();

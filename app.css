@@ -3403,3 +3403,25 @@ button.stat {
     grid-template-columns:1fr !important;
   }
 }
+
+
+
+/* v2.9.2 Bidirectional Sync Fix */
+.sync-diagnostics-grid div strong {
+  color: var(--muted);
+}
+.sync-actions {
+  gap: 8px !important;
+}
+.sync-actions #syncTasksBothWays {
+  box-shadow: 0 0 0 4px rgba(245,158,11,.12);
+}
+@media (max-width: 860px) {
+  .sync-actions {
+    display:grid !important;
+    grid-template-columns:1fr !important;
+  }
+  .sync-actions button {
+    width:100% !important;
+  }
+}
