@@ -1,4 +1,4 @@
-const APP_VERSION = '2.11.1';
+const APP_VERSION = '2.11.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -64,6 +64,21 @@ let syncLabState = {
   tone: 'warn',
   lastActionAt: ''
 };
+
+let syncLabDebug = {
+  appVersion: '',
+  email: '',
+  userId: '',
+  sessionUserId: '',
+  authError: '',
+  lastPayload: null,
+  lastResponse: null,
+  lastError: '',
+  lastStatus: '',
+  lastAnyRows: [],
+  lastAt: ''
+};
+
 
 
 const $ = (id) => document.getElementById(id);
@@ -1529,6 +1544,157 @@ function syncLabRowHtml(row) {
     <button class="ghost compact-primary" data-action="syncLabPick" data-id="${escapeHtml(row.id || '')}" type="button">${syncLabState.selectedId === row.id ? 'Выбрана' : 'Выбрать'}</button>
   </div>`;
 }
+
+function syncLabSafeJson(value) {
+  try {
+    if (value === undefined) return 'undefined';
+    return JSON.stringify(value, null, 2);
+  } catch (e) { return String(value); }
+}
+function syncLabDebugSet(patch = {}) {
+  syncLabDebug = {
+    ...syncLabDebug,
+    ...patch,
+    appVersion: typeof APP_VERSION !== 'undefined' ? APP_VERSION : '',
+    lastAt: new Date().toLocaleString('ru-RU')
+  };
+}
+function syncLabDebugHtml() {
+  const payload = syncLabDebug.lastPayload ? syncLabSafeJson(syncLabDebug.lastPayload) : '—';
+  const response = syncLabDebug.lastResponse ? syncLabSafeJson(syncLabDebug.lastResponse) : '—';
+  const anyRows = syncLabDebug.lastAnyRows && syncLabDebug.lastAnyRows.length ? syncLabSafeJson(syncLabDebug.lastAnyRows) : '—';
+  return `<div class="sync-lab-debug">
+    <h4>Диагностика записи и чтения</h4>
+    <div class="sync-lab-debug-grid">
+      <div><strong>Версия:</strong> ${escapeHtml(syncLabDebug.appVersion || APP_VERSION || '—')}</div>
+      <div><strong>Email:</strong> ${escapeHtml(syncLabDebug.email || settings.email || syncDiagnostics.email || '—')}</div>
+      <div><strong>user_id приложения:</strong> ${escapeHtml(syncLabDebug.userId || syncDiagnostics.userId || '—')}</div>
+      <div><strong>user_id сессии:</strong> ${escapeHtml(syncLabDebug.sessionUserId || '—')}</div>
+      <div><strong>Последний статус:</strong> ${escapeHtml(syncLabDebug.lastStatus || '—')}</div>
+      <div><strong>Последняя проверка:</strong> ${escapeHtml(syncLabDebug.lastAt || '—')}</div>
+    </div>
+    <div class="sync-lab-debug-error ${syncLabDebug.lastError ? 'has-error' : ''}"><strong>Ошибка:</strong> ${escapeHtml(syncLabDebug.lastError || 'нет')}</div>
+    <details><summary>Что приложение пыталось отправить</summary><pre>${escapeHtml(payload)}</pre></details>
+    <details><summary>Ответ Supabase на последнюю запись</summary><pre>${escapeHtml(response)}</pre></details>
+    <details><summary>Последние 10 задач пользователя без фильтра SYNC LAB</summary><pre>${escapeHtml(anyRows)}</pre></details>
+  </div>`;
+}
+async function syncLabRefreshAuthDiagnostic({ silent = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabDebugSet({ lastStatus: 'нет клиента Supabase', lastError: 'getSupabaseClient() вернул пусто' });
+    syncLabSet('нет облачного подключения', 'bad');
+    if (!silent) alert('Облачное подключение недоступно.');
+    return null;
+  }
+  try {
+    const sessionResult = await client.auth.getSession();
+    const userResult = await client.auth.getUser();
+    const sessionUser = sessionResult?.data?.session?.user || null;
+    const authUser = userResult?.data?.user || null;
+    const authError = sessionResult?.error?.message || userResult?.error?.message || '';
+    const user = authUser || sessionUser;
+    syncLabDebugSet({
+      email: user?.email || settings.email || syncDiagnostics.email || '',
+      userId: syncDiagnostics.userId || user?.id || '',
+      sessionUserId: user?.id || '',
+      authError,
+      lastStatus: user?.id ? 'сессия найдена' : 'сессия не найдена',
+      lastError: authError || ''
+    });
+    if (!user?.id) { syncLabSet('сессия не найдена', 'bad'); return null; }
+    syncDiagnostics.userId = user.id;
+    syncDiagnostics.email = user.email || syncDiagnostics.email || settings.email || '';
+    syncLabSet('вход проверен', 'ok');
+    return user;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    syncLabDebugSet({ lastStatus: 'ошибка проверки входа', lastError: msg });
+    syncLabSet('ошибка проверки входа: ' + msg, 'bad');
+    if (!silent) alert(msg);
+    return null;
+  }
+}
+async function syncLabReadAnyCloud({ silent = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) { syncLabSet('нет облачного подключения', 'bad'); return false; }
+  try {
+    const user = await syncLabRefreshAuthDiagnostic({ silent:true });
+    if (!user?.id) return false;
+    const { data, error, status, statusText } = await client.from('tasks')
+      .select('id,user_id,title,status,created_at,updated_at,deleted_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending:false })
+      .limit(10);
+    if (error) throw error;
+    syncLabDebugSet({
+      email: user.email || settings.email || '',
+      userId: user.id,
+      sessionUserId: user.id,
+      lastAnyRows: data || [],
+      lastStatus: `прочитано без фильтра: ${status || ''} ${statusText || ''}`,
+      lastError: ''
+    });
+    syncLabSet(`без фильтра прочитано строк: ${(data || []).length}`, 'ok');
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab read any', msg);
+    syncLabDebugSet({ lastStatus: 'ошибка чтения без фильтра', lastError: msg });
+    syncLabSet('ошибка чтения без фильтра: ' + msg, 'bad');
+    if (!silent) alert(msg);
+    return false;
+  }
+}
+async function syncLabWriteDiagnostic() {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabDebugSet({ lastStatus: 'нет клиента Supabase', lastError: 'getSupabaseClient() вернул пусто' });
+    syncLabSet('нет облачного подключения', 'bad');
+    alert('Облачное подключение недоступно.');
+    return false;
+  }
+  try {
+    const user = await syncLabRefreshAuthDiagnostic({ silent:true });
+    if (!user?.id) { syncLabSet('нет активной сессии для записи', 'bad'); return false; }
+    const ts = new Date().toLocaleString('ru-RU');
+    const id = (typeof newCloudId === 'function') ? newCloudId() : (crypto.randomUUID ? crypto.randomUUID() : uid());
+    const now = nowISO();
+    const row = {
+      id, user_id: user.id,
+      title: `${SYNC_LAB_PREFIX} WRITE TEST / ${syncLabDeviceLabel()} / ${ts}`,
+      project_id: null, project: null, due_date: null, plan_date: null,
+      status: 'inbox', priority: 'C', importance: 'low', urgency: 'low',
+      note: 'Диагностическая запись Sync Lab Diagnostic.', day_bucket: 'none',
+      order_index: Date.now(), created_at: now, updated_at: now,
+      done_at: null, archived_at: null, deleted_at: null
+    };
+    syncLabDebugSet({
+      email: user.email || settings.email || '', userId: user.id, sessionUserId: user.id,
+      lastPayload: row, lastResponse: null, lastError: '',
+      lastStatus: 'отправляем insert().select().single()'
+    });
+    const { data, error, status, statusText } = await client.from('tasks').insert(row).select('id,user_id,title,created_at,updated_at,deleted_at').single();
+    syncLabDebugSet({
+      lastResponse: { data, error, status, statusText },
+      lastError: error ? (error.message || syncLabSafeJson(error)) : '',
+      lastStatus: `ответ записи: ${status || ''} ${statusText || ''}`
+    });
+    if (error) throw error;
+    syncLabState.selectedId = data?.id || id;
+    syncLabSet('диагностическая запись создана', 'ok');
+    await syncLabReadCloud({ silent:true });
+    await syncLabReadAnyCloud({ silent:true });
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab write diagnostic', msg);
+    syncLabDebugSet({ lastError: msg, lastStatus: 'ошибка диагностической записи' });
+    syncLabSet('ошибка диагностической записи: ' + msg, 'bad');
+    alert(msg);
+    return false;
+  }
+}
 function renderSyncLab() {
   const active = syncLabState.activeRows || [];
   const deleted = syncLabState.deletedRows || [];
@@ -1538,30 +1704,34 @@ function renderSyncLab() {
       <div>
         <span class="view-kicker">диагностика</span>
         <h3>Sync Lab: проверка Supabase на таблице tasks</h3>
-        <p>Проверяем прямой цикл: создать строку в Supabase → прочитать на другом устройстве → поставить deleted_at → прочитать снова.</p>
+        <p>Проверяем iPhone: вход, user_id, insert, ответ Supabase, чтение с фильтром и без фильтра.</p>
       </div>
       <span class="device-login-status ${syncLabState.tone || 'warn'}">${escapeHtml(syncLabState.message || 'не запускалось')}</span>
     </div>
     <div class="sync-lab-actions">
+      <button class="primary simple-sync-main" id="syncLabDiagWrite" type="button">0. Проверить вход и запись</button>
       <button class="primary simple-sync-main" id="syncLabCreate" type="button">1. Создать тест в облаке</button>
-      <button class="primary simple-sync-main" id="syncLabRead" type="button">2. Прочитать из облака</button>
+      <button class="primary simple-sync-main" id="syncLabRead" type="button">2. Прочитать SYNC LAB</button>
+      <button class="primary simple-sync-main" id="syncLabReadAny" type="button">Прочитать последние 10 задач</button>
       <button class="danger simple-sync-main" id="syncLabDelete" type="button" ${syncLabState.selectedId ? '' : 'disabled'}>3. Удалить выбранную</button>
+      <button class="ghost simple-sync-main" id="syncLabAuth" type="button">Проверить вход</button>
       <button class="ghost simple-sync-main" id="syncLabClear" type="button">Очистить экран теста</button>
     </div>
     <div class="sync-lab-status">
       <div><strong>Выбранная задача:</strong> ${selected ? escapeHtml(selected.title || selected.id) : 'не выбрана'}</div>
       <div><strong>Последнее действие:</strong> ${escapeHtml(syncLabState.lastActionAt || 'не было')}</div>
-      <div><strong>Активных тестовых задач:</strong> ${active.length}</div>
-      <div><strong>Удалённых тестовых задач:</strong> ${deleted.length}</div>
+      <div><strong>Активных SYNC LAB:</strong> ${active.length}</div>
+      <div><strong>Удалённых SYNC LAB:</strong> ${deleted.length}</div>
     </div>
+    ${syncLabDebugHtml()}
     <div class="sync-lab-list">
-      <h4>Активные тестовые задачи</h4>
-      ${active.length ? active.map(syncLabRowHtml).join('') : '<div class="empty">Активных тестовых задач нет. Нажмите «Создать тест в облаке».</div>'}
-      <h4>Удалённые тестовые задачи</h4>
+      <h4>Активные тестовые задачи SYNC LAB</h4>
+      ${active.length ? active.map(syncLabRowHtml).join('') : '<div class="empty">Активных тестовых задач нет. Нажмите «0. Проверить вход и запись» или «1. Создать тест в облаке».</div>'}
+      <h4>Удалённые тестовые задачи SYNC LAB</h4>
       ${deleted.length ? deleted.slice(0, 5).map(syncLabRowHtml).join('') : '<div class="empty">Удалённых тестовых задач пока нет.</div>'}
     </div>
     <div class="auth-help-box">
-      <strong>Как читать результат:</strong> созданная на iPhone задача должна читаться на компьютере; удалённая на компьютере задача должна пропасть из активных на iPhone.
+      <strong>Как читать результат:</strong> если на iPhone запись не попадает в Supabase, нажмите «0. Проверить вход и запись» и смотрите блок «Ошибка» и «Ответ Supabase».
     </div>
   </section>`;
 }
@@ -1629,9 +1799,19 @@ async function syncLabCreateCloud() {
       archived_at: null,
       deleted_at: null
     };
-    const { error } = await client.from('tasks').insert(row);
+    syncLabDebugSet({
+      email: user.email || settings.email || '', userId: user.id, sessionUserId: user.id,
+      lastPayload: row, lastResponse: null, lastError: '',
+      lastStatus: 'отправляем обычный тест insert().select().single()'
+    });
+    const { data, error, status, statusText } = await client.from('tasks').insert(row).select('id,user_id,title,created_at,updated_at,deleted_at').single();
+    syncLabDebugSet({
+      lastResponse: { data, error, status, statusText },
+      lastError: error ? (error.message || syncLabSafeJson(error)) : '',
+      lastStatus: `ответ обычной записи: ${status || ''} ${statusText || ''}`
+    });
     if (error) throw error;
-    syncLabState.selectedId = id;
+    syncLabState.selectedId = data?.id || id;
     syncLabSet('создано в облаке', 'ok');
     await syncLabReadCloud({ silent:true });
     return true;
@@ -1690,7 +1870,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.11.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
+    <div class="notice"><strong>Версия 2.11.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -2211,6 +2391,9 @@ function bindSyncPanelButtons() {
   if ($('forceAutoSyncNow')) $('forceAutoSyncNow').onclick = (e) => { e.preventDefault(); simpleOneButtonSync(); };
   if ($('hardRefreshApp')) $('hardRefreshApp').onclick = async (e) => { e.preventDefault(); await clearAppCaches(); location.reload(); };
   if ($('clearAppErrors')) $('clearAppErrors').onclick = (e) => { e.preventDefault(); clearAppErrors(); };
+  if ($('syncLabDiagWrite')) $('syncLabDiagWrite').onclick = (e) => { e.preventDefault(); syncLabWriteDiagnostic(); };
+  if ($('syncLabReadAny')) $('syncLabReadAny').onclick = (e) => { e.preventDefault(); syncLabReadAnyCloud(); };
+  if ($('syncLabAuth')) $('syncLabAuth').onclick = (e) => { e.preventDefault(); syncLabRefreshAuthDiagnostic(); };
   if ($('syncLabCreate')) $('syncLabCreate').onclick = (e) => { e.preventDefault(); syncLabCreateCloud(); };
   if ($('syncLabRead')) $('syncLabRead').onclick = (e) => { e.preventDefault(); syncLabReadCloud(); };
   if ($('syncLabDelete')) $('syncLabDelete').onclick = (e) => { e.preventDefault(); syncLabDeleteCloud(); };
