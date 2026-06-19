@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-11-2-sync-lab-diagnostic';
+const CACHE = 'kvadrat-zadach-v2-11-3-read-inspector';
 const ASSETS = [
   './',
   './index.html',

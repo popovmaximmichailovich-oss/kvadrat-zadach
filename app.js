@@ -1,4 +1,4 @@
-const APP_VERSION = '2.11.2';
+const APP_VERSION = '2.11.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -76,6 +76,10 @@ let syncLabDebug = {
   lastError: '',
   lastStatus: '',
   lastAnyRows: [],
+  readByIdInput: '',
+  readByIdResult: null,
+  readByIdError: '',
+  readByIdStatus: '',
   lastAt: ''
 };
 
@@ -1577,6 +1581,18 @@ function syncLabDebugHtml() {
     <details><summary>Что приложение пыталось отправить</summary><pre>${escapeHtml(payload)}</pre></details>
     <details><summary>Ответ Supabase на последнюю запись</summary><pre>${escapeHtml(response)}</pre></details>
     <details><summary>Последние 10 задач пользователя без фильтра SYNC LAB</summary><pre>${escapeHtml(anyRows)}</pre></details>
+
+    <div class="sync-lab-any-table">
+      <h4>Последние строки пользователя, которые реально вернуло устройство</h4>
+      ${(syncLabDebug.lastAnyRows || []).length ? (syncLabDebug.lastAnyRows || []).slice(0, 10).map(r => `<div class="sync-lab-row ${r.deleted_at ? 'is-deleted' : ''}">
+        <div>
+          <strong>${escapeHtml(r.title || 'Без названия')}</strong>
+          <span>ID: ${escapeHtml(r.id || '')}</span>
+          <small>created: ${escapeHtml(String(r.created_at || '').replace('T',' ').slice(0,19))} · updated: ${escapeHtml(String(r.updated_at || '').replace('T',' ').slice(0,19))} · deleted: ${escapeHtml(r.deleted_at || 'null')}</small>
+        </div>
+      </div>`).join('') : '<div class="empty">Пока нет прочитанных строк. Нажмите «Прочитать последние 10 задач» или «Прочитать 50 по updated_at».</div>'}
+    </div>
+
   </div>`;
 }
 async function syncLabRefreshAuthDiagnostic({ silent = false } = {}) {
@@ -1695,6 +1711,122 @@ async function syncLabWriteDiagnostic() {
     return false;
   }
 }
+
+function syncLabSetReadIdValue(value) {
+  if (typeof syncLabDebug === 'undefined') return;
+  syncLabDebug.readByIdInput = String(value || '').trim();
+}
+async function syncLabFindById() {
+  const input = document.getElementById('syncLabIdInput');
+  const id = String(input?.value || syncLabDebug.readByIdInput || '').trim();
+  syncLabDebugSet({ readByIdInput: id, readByIdResult: null, readByIdError: '', readByIdStatus: 'поиск по id...' });
+  if (!id) {
+    syncLabDebugSet({ readByIdError: 'Введите id строки из Supabase', readByIdStatus: 'id не указан' });
+    syncLabSet('введите id задачи', 'warn');
+    return false;
+  }
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabDebugSet({ readByIdError: 'getSupabaseClient() вернул пусто', readByIdStatus: 'нет клиента Supabase' });
+    syncLabSet('нет облачного подключения', 'bad');
+    return false;
+  }
+  try {
+    const user = await syncLabRefreshAuthDiagnostic({ silent:true });
+    if (!user?.id) {
+      syncLabDebugSet({ readByIdError: 'нет активной сессии', readByIdStatus: 'сессия не найдена' });
+      syncLabSet('сессия не найдена', 'bad');
+      return false;
+    }
+    const { data, error, status, statusText } = await client.from('tasks')
+      .select('id,user_id,title,status,created_at,updated_at,deleted_at,note,priority,importance,urgency')
+      .eq('id', id)
+      .maybeSingle();
+
+    syncLabDebugSet({
+      readByIdResult: { data, error, status, statusText },
+      readByIdError: error ? (error.message || syncLabSafeJson(error)) : '',
+      readByIdStatus: data ? `найдено: ${status || ''} ${statusText || ''}` : `не найдено: ${status || ''} ${statusText || ''}`,
+      lastResponse: { findById: { data, error, status, statusText } },
+      lastError: error ? (error.message || syncLabSafeJson(error)) : '',
+      lastStatus: data ? 'поиск по id: найдено' : 'поиск по id: не найдено'
+    });
+
+    if (error) throw error;
+    if (data) {
+      syncLabState.selectedId = data.id;
+      syncLabSet('задача по ID найдена', 'ok');
+    } else {
+      syncLabSet('задача по ID не найдена', 'warn');
+    }
+    render();
+    return Boolean(data);
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab find by id', msg);
+    syncLabDebugSet({ readByIdError: msg, readByIdStatus: 'ошибка поиска по id', lastError: msg });
+    syncLabSet('ошибка поиска по ID: ' + msg, 'bad');
+    alert(msg);
+    render();
+    return false;
+  }
+}
+async function syncLabRead50Updated() {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabSet('нет облачного подключения', 'bad');
+    return false;
+  }
+  try {
+    const user = await syncLabRefreshAuthDiagnostic({ silent:true });
+    if (!user?.id) return false;
+    const { data, error, status, statusText } = await client.from('tasks')
+      .select('id,user_id,title,status,created_at,updated_at,deleted_at')
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending:false })
+      .limit(50);
+    if (error) throw error;
+    syncLabDebugSet({
+      lastAnyRows: data || [],
+      lastResponse: { read50Updated: { count: (data || []).length, status, statusText } },
+      lastError: '',
+      lastStatus: `прочитано 50 по updated_at: ${status || ''} ${statusText || ''}`
+    });
+    syncLabSet(`прочитано по updated_at: ${(data || []).length}`, 'ok');
+    render();
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab read 50 updated', msg);
+    syncLabDebugSet({ lastError: msg, lastStatus: 'ошибка чтения 50 по updated_at' });
+    syncLabSet('ошибка чтения 50: ' + msg, 'bad');
+    alert(msg);
+    render();
+    return false;
+  }
+}
+function syncLabReadInspectorHtml() {
+  const idValue = escapeHtml(syncLabDebug.readByIdInput || '');
+  const result = syncLabDebug.readByIdResult ? syncLabSafeJson(syncLabDebug.readByIdResult) : '—';
+  const error = syncLabDebug.readByIdError || 'нет';
+  return `<div class="sync-lab-inspector">
+    <h4>Read Inspector: найти конкретную строку по ID</h4>
+    <p>Вставьте значение из колонки <strong>id</strong> строки Supabase. Это прямой тест чтения без фильтра по названию, сортировки и лимита 10.</p>
+    <div class="sync-lab-id-row">
+      <input id="syncLabIdInput" value="${idValue}" placeholder="id из Supabase, например xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+      <button class="primary" id="syncLabFindById" type="button">Найти задачу по ID</button>
+    </div>
+    <div class="sync-lab-debug-error ${syncLabDebug.readByIdError ? 'has-error' : ''}">
+      <strong>Статус поиска:</strong> ${escapeHtml(syncLabDebug.readByIdStatus || 'не запускался')}<br>
+      <strong>Ошибка поиска:</strong> ${escapeHtml(error)}
+    </div>
+    <details open>
+      <summary>Ответ Supabase по ID</summary>
+      <pre>${escapeHtml(result)}</pre>
+    </details>
+  </div>`;
+}
+
 function renderSyncLab() {
   const active = syncLabState.activeRows || [];
   const deleted = syncLabState.deletedRows || [];
@@ -1724,6 +1856,7 @@ function renderSyncLab() {
       <div><strong>Удалённых SYNC LAB:</strong> ${deleted.length}</div>
     </div>
     ${syncLabDebugHtml()}
+    ${syncLabReadInspectorHtml()}
     <div class="sync-lab-list">
       <h4>Активные тестовые задачи SYNC LAB</h4>
       ${active.length ? active.map(syncLabRowHtml).join('') : '<div class="empty">Активных тестовых задач нет. Нажмите «0. Проверить вход и запись» или «1. Создать тест в облаке».</div>'}
@@ -1870,7 +2003,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.11.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
+    <div class="notice"><strong>Версия 2.11.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -2397,6 +2530,8 @@ function bindSyncPanelButtons() {
   if ($('syncLabCreate')) $('syncLabCreate').onclick = (e) => { e.preventDefault(); syncLabCreateCloud(); };
   if ($('syncLabRead')) $('syncLabRead').onclick = (e) => { e.preventDefault(); syncLabReadCloud(); };
   if ($('syncLabDelete')) $('syncLabDelete').onclick = (e) => { e.preventDefault(); syncLabDeleteCloud(); };
+  if ($('syncLabFindById')) $('syncLabFindById').onclick = (e) => { e.preventDefault(); syncLabSetReadIdValue($('syncLabIdInput')?.value || ''); syncLabFindById(); };
+  if ($('syncLabRead50')) $('syncLabRead50').onclick = (e) => { e.preventDefault(); syncLabRead50Updated(); };
   if ($('syncLabClear')) $('syncLabClear').onclick = (e) => { e.preventDefault(); syncLabClearScreen(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
