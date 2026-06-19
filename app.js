@@ -1,4 +1,4 @@
-const APP_VERSION = '2.12.2';
+const APP_VERSION = '2.12.3';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -2016,7 +2016,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.12.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.12.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -3093,6 +3093,17 @@ function mergeCloudIntoLocal(cloudTasks, { preserveLocal = true } = {}) {
   tasks = [...byId.values()].sort((a,b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
   saveTasks();
 }
+
+async function cloudRowById(client, id) {
+  if (!id) return null;
+  const { data, error } = await client.from('tasks')
+    .select('id,user_id,title,status,updated_at,deleted_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = {}) {
   const uniqueIds = taskSyncCandidateIds({ onlyDirty });
   let sent = 0;
@@ -3105,6 +3116,23 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
         if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(originalId);
         continue;
       }
+
+      // v2.12.3: cloud tombstone wins even BEFORE local dirty push.
+      // A stale active local copy must never overwrite a row already deleted in Supabase.
+      const serverRow = await cloudRowById(client, fixedId);
+      if (serverRow && taskIsDeleted(serverRow)) {
+        const idx = tasks.findIndex(t => normalizeTask(t).id === fixedId || normalizeTask(t).id === originalId);
+        if (idx >= 0) {
+          tasks[idx] = normalizeTask(rowToTask(serverRow));
+        }
+        if (typeof dirtyTaskIds !== 'undefined') {
+          dirtyTaskIds.delete(fixedId);
+          dirtyTaskIds.delete(originalId);
+        }
+        addSyncAudit('локальная копия не отправлена', `в Supabase задача уже удалена: ${serverRow.title || fixedId}`);
+        continue;
+      }
+
       const row = cloudSafeTaskPayload(task, userId);
       const { data, error } = await client.from('tasks')
         .upsert(row, { onConflict:'id' })
@@ -3113,6 +3141,7 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
       if (error) throw error;
       if (!data?.id) throw new Error('Supabase не вернул подтверждение строки');
       sent += 1;
+
       if (typeof dirtyTaskIds !== 'undefined') {
         dirtyTaskIds.delete(fixedId);
         dirtyTaskIds.delete(originalId);
@@ -3310,51 +3339,35 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
   });
 
   const nextById = new Map();
+  const cloudTombstoneIds = new Set();
 
-  // First apply every cloud row. If Supabase says deleted_at is filled,
-  // this is a tombstone and it always wins over any local copy.
   cloudById.forEach((cloudTask, id) => {
     nextById.set(id, cloudTask);
-    if (taskIsDeleted(cloudTask) && typeof dirtyTaskIds !== 'undefined') {
-      dirtyTaskIds.delete(id);
+    if (taskIsDeleted(cloudTask)) {
+      cloudTombstoneIds.add(id);
+      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(id);
     }
   });
 
-  // Preserve only real unsent local changes that do not contradict a cloud tombstone.
+  // v2.12.3: Supabase is the working list source.
+  // Keep local dirty rows only if Supabase does not know them yet.
   tasks.forEach(t => {
     const local = normalizeTask(t);
     if (!local.id) return;
 
-    const cloud = cloudById.get(local.id);
-
-    // Cloud deletion is final. Local data cannot resurrect the task.
-    if (cloud && taskIsDeleted(cloud)) {
-      nextById.set(local.id, cloud);
+    if (cloudTombstoneIds.has(local.id)) {
       if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(local.id);
+      nextById.set(local.id, cloudById.get(local.id));
       return;
     }
 
     const isDirty = typeof dirtyTaskIds !== 'undefined' && dirtyTaskIds.has(local.id);
-    if (!isDirty) return;
+    const existsInCloud = cloudById.has(local.id);
 
-    // Local deletion also wins locally until it is pushed.
-    if (taskIsDeleted(local)) {
+    if (isDirty && !existsInCloud) {
+      // Offline-created local task not yet in Supabase. Preserve it until a confirmed push.
       nextById.set(local.id, local);
-      return;
     }
-
-    const localTime = stableSyncCompareTime(local.updatedAt || local.deletedAt || local.createdAt);
-    const cloudTime = stableSyncCompareTime(cloud?.updatedAt || cloud?.deletedAt || cloud?.createdAt);
-
-    // If cloud has the same/newer state, server wins and dirty is cleared.
-    if (cloud && cloudTime >= localTime) {
-      dirtyTaskIds.delete(local.id);
-      nextById.set(local.id, cloud);
-      return;
-    }
-
-    // Otherwise keep unsent local active change until it is explicitly acknowledged.
-    nextById.set(local.id, local);
   });
 
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
@@ -3367,12 +3380,13 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
 
   const activeCount = tasks.filter(t => !taskIsDeleted(t)).length;
   const deletedCount = tasks.filter(t => taskIsDeleted(t)).length;
+  const inboxCount = tasks.filter(t => !taskIsDeleted(t) && (t.status || 'inbox') === 'inbox').length;
   syncDiagnostics.localTasks = activeCount;
   syncDiagnostics.remoteTasks = activeCount;
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
   syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  return { activeCount, deletedCount, totalCount: tasks.length, pulledCount: cloudTasks.length };
+  return { activeCount, deletedCount, inboxCount, totalCount: tasks.length, pulledCount: cloudTasks.length };
 }
 
 async function syncEngineSyncNow({ silent = false } = {}) {
@@ -3383,7 +3397,7 @@ async function syncEngineSyncNow({ silent = false } = {}) {
     }
     syncEngineBusy = true;
     setSyncState('синхронизация...', 'warn');
-    addSyncAudit('Stable Sync v2.12.1', 'старт: отправка ожидающих → полное чтение Supabase → пересборка кэша');
+    addSyncAudit('Cloud Pull Wins v2.12.3', 'старт: проверка dirty → полное чтение Supabase → прямое обновление списка');
     try {
       const pending = await syncEnginePushPending({ silent:true });
       const cloudTasks = await syncEnginePullCloud({ silent:true });
@@ -3400,20 +3414,25 @@ async function syncEngineSyncNow({ silent = false } = {}) {
         failed: failedCount
       });
 
+      // Reset visual filters after manual sync so newly pulled inbox tasks are visible immediately.
+      if ($('searchInput')) $('searchInput').value = '';
+      if ($('projectFilter')) $('projectFilter').value = 'all';
+      if (!silent && applied.inboxCount > 0) currentView = 'inbox';
+
       if (failedCount) {
         setSyncState(`частично · ${summary}`, 'warn');
       } else {
         clearSyncErrorsAfterSuccess();
-        setSyncState(`синхронизировано · ${summary}`, 'ok');
+        setSyncState(`синхронизировано · ${summary} · входящих ${applied.inboxCount}`, 'ok');
       }
 
-      addSyncAudit('Stable Sync v2.12.1', summary);
+      addSyncAudit('Cloud Pull Wins v2.12.3', `${summary}; входящих ${applied.inboxCount}`);
       render();
       return true;
     } catch (e) {
       const msg = e?.message || String(e);
-      recordAppError('Stable Sync sync now', msg);
-      addSyncAudit('Stable Sync ошибка', msg);
+      recordAppError('Cloud Pull Wins sync now', msg);
+      addSyncAudit('Cloud Pull Wins ошибка', msg);
       setSyncState('ошибка синхронизации: ' + msg, 'bad');
       if (!silent) alert(msg);
       render();
@@ -3563,63 +3582,20 @@ async function hasActiveCloudSession() {
   return false;
 }
 function enqueueAutoTaskSync(reason='изменение задач', delay=700) {
-  if (!settings.autoSync) return;
-  clearTimeout(autoTaskSyncTimer);
-  setSyncState(`синхронизация: ${reason}`, 'warn');
-  updateAutoSyncUi(`ожидает отправки: ${reason}`, 'warn');
-  autoTaskSyncTimer = setTimeout(async () => {
-    try {
-      const signed = await hasActiveCloudSession();
-      if (!signed) {
-        setSyncState('локально сохранено · нужен вход для облака', 'warn');
-        updateAutoSyncUi('локально сохранено · нужен вход', 'warn');
-        return;
-      }
-      await syncTasksBothWays({ silent:true });
-      updateAutoSyncUi(`авто: задачи проверены ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
-    } catch (e) {
-      console.warn('enqueueAutoTaskSync failed', e);
-      recordAppError('синхронизация', e);
-      syncDiagnostics.lastError = e.message;
-      updateAutoSyncUi('ошибка автосинхронизации: ' + e.message, 'bad');
-      setSyncState('ошибка автосинхронизации: ' + e.message, 'bad');
-      scheduleReliableRetry('ошибка автообмена', 4000);
-      render();
-    }
-  }, delay);
+  // v2.12.3: disabled to avoid background races. Writes are immediate; cross-device pull is manual.
+  updateAutoSyncUi(`изменение сохранено · на другом устройстве нажмите «Синхронизировать»`, 'idle');
 }
 function scheduleReliableRetry(reason='ожидает повторной синхронизации', delay=3000) {
-  if (!settings.autoSync || dirtyTaskCount() === 0) return;
-  autoSyncRetryCount += 1;
-  const cappedDelay = Math.min(delay + autoSyncRetryCount * 1000, 15000);
-  clearTimeout(autoTaskSyncTimer);
-  updateAutoSyncUi(`${reason} · повтор ${autoSyncRetryCount}`, 'warn');
-  autoTaskSyncTimer = setTimeout(async () => {
-    const signed = await hasActiveCloudSession();
-    if (!signed) {
-      updateAutoSyncUi('задачи сохранены локально · нужен вход', 'warn');
-      return;
-    }
-    await pushTasksOnly({ silent:true, onlyDirty:true });
-  }, cappedDelay);
+  // v2.12.3: disabled to avoid hidden retries overwriting cloud state.
+  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
+    updateAutoSyncUi(`ожидает отправки: ${dirtyTaskCount()} · нажмите «Синхронизировать»`, 'warn');
+  }
 }
 
 
 function enqueueAutoPull(reason='проверка обновлений', delay=500) {
-  if (!settings.autoSync) return;
-  clearTimeout(autoPullTimer);
-  autoPullTimer = setTimeout(async () => {
-    try {
-      const signed = await hasActiveCloudSession();
-      if (!signed) return;
-      await pullTasksOnly({ silent:true });
-      updateAutoSyncUi(`авто: загружены обновления ${new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`, 'ok');
-    } catch (e) {
-      console.warn('enqueueAutoPull failed', e);
-      syncDiagnostics.lastError = e.message;
-      updateAutoSyncUi('ошибка загрузки обновлений: ' + e.message, 'bad');
-    }
-  }, delay);
+  // v2.12.3: disabled to avoid background races.
+  updateAutoSyncUi('обновление между устройствами — кнопкой «Синхронизировать»', 'idle');
 }
 async function forceAutoSyncNow() {
   const signed = await hasActiveCloudSession();
