@@ -3580,3 +3580,20 @@ button:disabled {
 
 
 /* v2.11.0 Cloud-First Tasks */
+
+/* v2.11.1 Sync Lab */
+.sync-lab-card { border: 1px solid rgba(125, 211, 252, .24); }
+.sync-lab-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+.sync-lab-actions { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 10px; margin: 14px 0; }
+.sync-lab-status { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }
+.sync-lab-status > div { padding: 10px; border-radius: 14px; background: rgba(15, 23, 42, .42); border: 1px solid rgba(148, 163, 184, .14); }
+.sync-lab-list h4 { margin: 16px 0 8px; }
+.sync-lab-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 14px; border: 1px solid rgba(148, 163, 184, .16); background: rgba(15, 23, 42, .42); margin-bottom: 8px; }
+.sync-lab-row strong, .sync-lab-row span, .sync-lab-row small { display: block; }
+.sync-lab-row span, .sync-lab-row small { color: var(--muted); font-size: 12px; }
+.sync-lab-row.is-deleted { opacity: .68; }
+@media (max-width: 860px) {
+  .sync-lab-head { display: block; }
+  .sync-lab-actions, .sync-lab-status { grid-template-columns: 1fr; }
+  .sync-lab-row { align-items: stretch; flex-direction: column; }
+}

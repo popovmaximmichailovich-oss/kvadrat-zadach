@@ -1,4 +1,4 @@
-const APP_VERSION = '2.11.0';
+const APP_VERSION = '2.11.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -53,6 +53,18 @@ let supabaseClientKey = '';
 let selectedQuickProjectId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '', lastPushAt: '', lastPullAt: '', lastLocalTask: '', lastCloudTask: '', lastCloudTaskAt: '' };
+
+const SYNC_LAB_PREFIX = 'SYNC LAB /';
+let syncLabState = {
+  rows: [],
+  activeRows: [],
+  deletedRows: [],
+  selectedId: '',
+  message: 'Тест ещё не запускался.',
+  tone: 'warn',
+  lastActionAt: ''
+};
+
 
 const $ = (id) => document.getElementById(id);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1487,13 +1499,201 @@ function renderTimesheet() {
     <section><h3>Журнал отметок за ${monthTitle(ym)}</h3>${renderWorkLogs(ym)}</section>
   </section>`;
 }
+
+function syncLabDeviceLabel() {
+  try {
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'iPhone';
+    if (/Android/i.test(ua)) return 'Android';
+    if (/Windows/i.test(ua)) return 'Windows';
+    if (/Macintosh|Mac OS/i.test(ua)) return 'Mac';
+  } catch {}
+  return 'Устройство';
+}
+function syncLabSet(message, tone = 'warn') {
+  syncLabState.message = message;
+  syncLabState.tone = tone;
+  syncLabState.lastActionAt = new Date().toLocaleString('ru-RU');
+  if (currentView === 'settings') render();
+}
+function syncLabRowHtml(row) {
+  const deleted = Boolean(row.deleted_at || row.deletedAt);
+  const created = String(row.created_at || row.createdAt || '').replace('T', ' ').slice(0, 19);
+  const updated = String(row.updated_at || row.updatedAt || '').replace('T', ' ').slice(0, 19);
+  return `<div class="sync-lab-row ${deleted ? 'is-deleted' : ''}">
+    <div>
+      <strong>${escapeHtml(row.title || 'Без названия')}</strong>
+      <span>${escapeHtml(deleted ? 'удалена' : 'активна')} · создана: ${escapeHtml(created || '—')} · обновлена: ${escapeHtml(updated || '—')}</span>
+      <small>ID: ${escapeHtml(row.id || '')}</small>
+    </div>
+    <button class="ghost compact-primary" data-action="syncLabPick" data-id="${escapeHtml(row.id || '')}" type="button">${syncLabState.selectedId === row.id ? 'Выбрана' : 'Выбрать'}</button>
+  </div>`;
+}
+function renderSyncLab() {
+  const active = syncLabState.activeRows || [];
+  const deleted = syncLabState.deletedRows || [];
+  const selected = syncLabState.selectedId ? (syncLabState.rows || []).find(r => r.id === syncLabState.selectedId) : null;
+  return `<section class="card sync-lab-card">
+    <div class="sync-lab-head">
+      <div>
+        <span class="view-kicker">диагностика</span>
+        <h3>Sync Lab: проверка Supabase на таблице tasks</h3>
+        <p>Проверяем прямой цикл: создать строку в Supabase → прочитать на другом устройстве → поставить deleted_at → прочитать снова.</p>
+      </div>
+      <span class="device-login-status ${syncLabState.tone || 'warn'}">${escapeHtml(syncLabState.message || 'не запускалось')}</span>
+    </div>
+    <div class="sync-lab-actions">
+      <button class="primary simple-sync-main" id="syncLabCreate" type="button">1. Создать тест в облаке</button>
+      <button class="primary simple-sync-main" id="syncLabRead" type="button">2. Прочитать из облака</button>
+      <button class="danger simple-sync-main" id="syncLabDelete" type="button" ${syncLabState.selectedId ? '' : 'disabled'}>3. Удалить выбранную</button>
+      <button class="ghost simple-sync-main" id="syncLabClear" type="button">Очистить экран теста</button>
+    </div>
+    <div class="sync-lab-status">
+      <div><strong>Выбранная задача:</strong> ${selected ? escapeHtml(selected.title || selected.id) : 'не выбрана'}</div>
+      <div><strong>Последнее действие:</strong> ${escapeHtml(syncLabState.lastActionAt || 'не было')}</div>
+      <div><strong>Активных тестовых задач:</strong> ${active.length}</div>
+      <div><strong>Удалённых тестовых задач:</strong> ${deleted.length}</div>
+    </div>
+    <div class="sync-lab-list">
+      <h4>Активные тестовые задачи</h4>
+      ${active.length ? active.map(syncLabRowHtml).join('') : '<div class="empty">Активных тестовых задач нет. Нажмите «Создать тест в облаке».</div>'}
+      <h4>Удалённые тестовые задачи</h4>
+      ${deleted.length ? deleted.slice(0, 5).map(syncLabRowHtml).join('') : '<div class="empty">Удалённых тестовых задач пока нет.</div>'}
+    </div>
+    <div class="auth-help-box">
+      <strong>Как читать результат:</strong> созданная на iPhone задача должна читаться на компьютере; удалённая на компьютере задача должна пропасть из активных на iPhone.
+    </div>
+  </section>`;
+}
+async function syncLabReadCloud({ silent = false } = {}) {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabSet('нет облачного подключения', 'bad');
+    if (!silent) alert('Облачное подключение недоступно.');
+    return false;
+  }
+  try {
+    const user = await getActiveCloudUser(client);
+    const { data, error } = await client.from('tasks')
+      .select('id,user_id,title,status,created_at,updated_at,deleted_at')
+      .eq('user_id', user.id)
+      .like('title', `${SYNC_LAB_PREFIX}%`)
+      .order('created_at', { ascending:false })
+      .limit(20);
+    if (error) throw error;
+    const rows = data || [];
+    syncLabState.rows = rows;
+    syncLabState.activeRows = rows.filter(r => !r.deleted_at);
+    syncLabState.deletedRows = rows.filter(r => r.deleted_at);
+    if (syncLabState.selectedId && !rows.some(r => r.id === syncLabState.selectedId)) syncLabState.selectedId = '';
+    syncLabSet(`прочитано: активных ${syncLabState.activeRows.length}, удалённых ${syncLabState.deletedRows.length}`, 'ok');
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab read', msg);
+    syncLabSet('ошибка чтения: ' + msg, 'bad');
+    if (!silent) alert(msg);
+    return false;
+  }
+}
+async function syncLabCreateCloud() {
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabSet('нет облачного подключения', 'bad');
+    alert('Облачное подключение недоступно.');
+    return false;
+  }
+  try {
+    const user = await getActiveCloudUser(client);
+    const ts = new Date().toLocaleString('ru-RU');
+    const id = (typeof newCloudId === 'function') ? newCloudId() : (crypto.randomUUID ? crypto.randomUUID() : uid());
+    const now = nowISO();
+    const row = {
+      id,
+      user_id: user.id,
+      title: `${SYNC_LAB_PREFIX} ${syncLabDeviceLabel()} / ${ts}`,
+      project_id: null,
+      project: null,
+      due_date: null,
+      plan_date: null,
+      status: 'inbox',
+      priority: 'C',
+      importance: 'low',
+      urgency: 'low',
+      note: 'Тестовая задача Sync Lab. Можно удалять.',
+      day_bucket: 'none',
+      order_index: Date.now(),
+      created_at: now,
+      updated_at: now,
+      done_at: null,
+      archived_at: null,
+      deleted_at: null
+    };
+    const { error } = await client.from('tasks').insert(row);
+    if (error) throw error;
+    syncLabState.selectedId = id;
+    syncLabSet('создано в облаке', 'ok');
+    await syncLabReadCloud({ silent:true });
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab create', msg);
+    syncLabSet('ошибка создания: ' + msg, 'bad');
+    alert(msg);
+    return false;
+  }
+}
+async function syncLabDeleteCloud() {
+  const id = syncLabState.selectedId;
+  if (!id) {
+    syncLabSet('сначала выберите тестовую задачу', 'warn');
+    return false;
+  }
+  const client = getSupabaseClient();
+  if (!client) {
+    syncLabSet('нет облачного подключения', 'bad');
+    alert('Облачное подключение недоступно.');
+    return false;
+  }
+  try {
+    const user = await getActiveCloudUser(client);
+    const now = nowISO();
+    const { error } = await client.from('tasks')
+      .update({ deleted_at: now, updated_at: now })
+      .eq('id', id)
+      .eq('user_id', user.id);
+    if (error) throw error;
+    syncLabSet('deleted_at записан', 'ok');
+    await syncLabReadCloud({ silent:true });
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Sync Lab delete', msg);
+    syncLabSet('ошибка удаления: ' + msg, 'bad');
+    alert(msg);
+    return false;
+  }
+}
+function syncLabClearScreen() {
+  syncLabState.rows = [];
+  syncLabState.activeRows = [];
+  syncLabState.deletedRows = [];
+  syncLabState.selectedId = '';
+  syncLabSet('экран теста очищен', 'warn');
+}
+function syncLabPick(id) {
+  syncLabState.selectedId = id || '';
+  syncLabSet(syncLabState.selectedId ? 'тестовая задача выбрана' : 'выбор сброшен', syncLabState.selectedId ? 'ok' : 'warn');
+}
+
 function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.11.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
+    <div class="notice"><strong>Версия 2.11.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">одна кнопка</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
+    ${renderSyncLab()}
 
     <section class="device-login-card card">
       <div class="device-login-head">
@@ -2011,6 +2211,10 @@ function bindSyncPanelButtons() {
   if ($('forceAutoSyncNow')) $('forceAutoSyncNow').onclick = (e) => { e.preventDefault(); simpleOneButtonSync(); };
   if ($('hardRefreshApp')) $('hardRefreshApp').onclick = async (e) => { e.preventDefault(); await clearAppCaches(); location.reload(); };
   if ($('clearAppErrors')) $('clearAppErrors').onclick = (e) => { e.preventDefault(); clearAppErrors(); };
+  if ($('syncLabCreate')) $('syncLabCreate').onclick = (e) => { e.preventDefault(); syncLabCreateCloud(); };
+  if ($('syncLabRead')) $('syncLabRead').onclick = (e) => { e.preventDefault(); syncLabReadCloud(); };
+  if ($('syncLabDelete')) $('syncLabDelete').onclick = (e) => { e.preventDefault(); syncLabDeleteCloud(); };
+  if ($('syncLabClear')) $('syncLabClear').onclick = (e) => { e.preventDefault(); syncLabClearScreen(); };
   if (selfCheckBtn) selfCheckBtn.onclick = (e) => { e.preventDefault(); runAppSelfCheck(); };
 }
 function openEdit(id) {
@@ -2129,6 +2333,7 @@ function bindDynamicActions() {
     if (action === 'openInboxFromStats') openInboxFromStats();
     if (action === 'openSyncFromStats') openSyncFromStats();
     if (action === 'checkCloudFromHome') checkCloudConnection();
+    if (action === 'syncLabPick') syncLabPick(id);
     if (action === 'done') completeTask(id);
     if (action === 'restore') restoreTask(id);
     if (action === 'deleteTaskQuick') { if (confirm('Удалить задачу из списка?')) deleteTask(id); }
@@ -2573,100 +2778,6 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
   }
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
   return { sent, failed, attempted: uniqueIds.length };
-}
-
-
-async function saveTaskToCloudImmediately(taskId, reason = 'изменение задачи', { silent = true } = {}) {
-  const task = (typeof localTaskById === 'function' ? localTaskById(taskId) : tasks.find(t => t.id === taskId));
-  if (!task) return false;
-  const client = getSupabaseClient();
-  if (!client) {
-    markTaskDirty(taskId);
-    setSyncState('сохранено локально · облако недоступно', 'warn');
-    return false;
-  }
-  try {
-    const user = await getActiveCloudUser(client);
-    const fixedId = (typeof ensureTaskCloudReady === 'function' ? (ensureTaskCloudReady(taskId) || taskId) : taskId);
-    const fixedTask = (typeof localTaskById === 'function' ? localTaskById(fixedId) : tasks.find(t => t.id === fixedId));
-    if (!fixedTask) return false;
-    const row = cloudSafeTaskPayload(fixedTask, user.id);
-    const { error } = await client.from('tasks').upsert(row, { onConflict:'id' });
-    if (error) throw error;
-    if (typeof dirtyTaskIds !== 'undefined') {
-      dirtyTaskIds.delete(taskId);
-      dirtyTaskIds.delete(fixedId);
-      saveDirtyTaskIds();
-    }
-    syncDiagnostics.lastPushAt = new Date().toLocaleString('ru-RU');
-    syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    setSyncState(`${reason}: сохранено в облаке`, 'ok');
-    addSyncAudit('облако', `${reason}: ${fixedTask.title}`);
-    if (currentView === 'settings') render();
-    return true;
-  } catch (e) {
-    const msg = e?.message || String(e);
-    markTaskDirty(taskId);
-    recordAppError(reason, msg);
-    setSyncState(`${reason}: сохранено локально, облако позже`, 'warn');
-    addSyncAudit('ожидает отправки', `${reason}: ${msg}`);
-    if (!silent) alert(msg);
-    if (currentView === 'settings') render();
-    return false;
-  }
-}
-async function pullCloudTasksOnly({ silent = false } = {}) {
-  const client = getSupabaseClient();
-  if (!client) {
-    const msg = 'Облачное подключение недоступно';
-    setSyncState(msg, 'bad');
-    if (!silent) alert(msg);
-    return false;
-  }
-  try {
-    const user = await getActiveCloudUser(client);
-    const cloudTasks = await fetchCloudTasksForUser(client, user.id);
-    mergeCloudIntoLocal(cloudTasks, { preserveLocal: true });
-    const activeCloud = activeCloudTasksList(cloudTasks);
-    syncDiagnostics.localTasks = activeTasks().length;
-    syncDiagnostics.remoteTasks = activeCloud.length;
-    syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
-    syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
-    syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    syncDiagnostics.lastCloudTask = latestActiveCloudTaskTitle(cloudTasks);
-    clearSyncErrorsAfterSuccess();
-    setSyncState(`готово · локально ${syncDiagnostics.localTasks} · в облаке ${syncDiagnostics.remoteTasks}`, 'ok');
-    addSyncAudit('загрузка из облака', `получено ${activeCloud.length} активных задач`);
-    render();
-    return true;
-  } catch (e) {
-    const msg = e?.message || String(e);
-    recordAppError('загрузка из облака', msg);
-    setSyncState('ошибка загрузки: ' + msg, 'bad');
-    addSyncAudit('ошибка загрузки', msg);
-    if (!silent) alert(msg);
-    render();
-    return false;
-  }
-}
-async function cloudFirstOneButtonSync({ silent = false } = {}) {
-  const dirty = typeof dirtyTaskCount === 'function' ? dirtyTaskCount() : 0;
-  if (dirty > 0) {
-    setSyncState(`отправляем ожидающие изменения: ${dirty}`, 'warn');
-    const client = getSupabaseClient();
-    try {
-      const user = await getActiveCloudUser(client);
-      const pushResult = await pushLocalTasksLineByLine(client, user.id, { onlyDirty: true });
-      if (pushResult.failed.length) {
-        recordAppError('отправка ожидающих', pushResult.failed.slice(0,3).join('; '));
-        addSyncAudit('часть ожидающих не отправлена', pushResult.failed.slice(0,3).join('; '));
-      }
-    } catch (e) {
-      recordAppError('отправка ожидающих', e);
-      addSyncAudit('ошибка отправки ожидающих', e?.message || String(e));
-    }
-  }
-  return pullCloudTasksOnly({ silent });
 }
 
 async function simpleOneButtonSync() {
