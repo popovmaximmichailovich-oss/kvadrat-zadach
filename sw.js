@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-12-3-cloud-pull-wins';
+const CACHE = 'kvadrat-zadach-v2-12-4-visible-pull';
 const ASSETS = [
   './',
   './index.html',

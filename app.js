@@ -1,4 +1,4 @@
-const APP_VERSION = '2.12.3';
+const APP_VERSION = '2.12.4';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -847,9 +847,21 @@ function renderWeek() {
   return `<section class="section-head"><div><h2>Неделя</h2><p>Ближайшие 7 дней. Просрочку лучше сразу переносить или закрывать.</p></div></section>
   <div class="grid-2">${days.map(d => `<section class="column"><h3>${dateLabel(d)}</h3><p class="column-sub">${d}</p>${listHtml(list.filter(t => t.planDate === d || t.dueDate === d), 'Пусто')}</section>`).join('')}</div>`;
 }
+
+function newestPulledTasksBanner() {
+  const ids = Array.isArray(lastPulledVisibleTaskIds) ? lastPulledVisibleTaskIds : [];
+  if (!ids.length) return '';
+  const found = ids.map(id => activeTasks().find(t => t.id === id)).filter(Boolean);
+  if (!found.length) return '';
+  return `<section class="card cloud-pulled-banner">
+    <div class="section-head compact-head"><div><h3>Новые задачи из облака</h3><p>Показаны задачи, которые пришли после последней синхронизации.</p></div></div>
+    ${listHtml(found.slice(0, 10), 'Новых задач нет')}
+  </section>`;
+}
+
 function renderInbox() {
   const list = visibleTasks().filter(t => t.status === 'inbox');
-  return `<section class="section-head"><div><h2>Разбор входящих</h2><p>Сюда попадает быстрый ввод одной строкой. Потом назначаешь проект, дату, приоритет и переводишь задачу в план.</p></div></section>${listHtml(list, 'Входящие разобраны')}`;
+  return `${newestPulledTasksBanner()}<section class="section-head"><div><h2>Разбор входящих</h2><p>Сюда попадает быстрый ввод одной строкой. Потом назначаешь проект, дату, приоритет и переводишь задачу в план.</p></div></section>${listHtml(list, 'Входящие разобраны')}`;
 }
 function renderMatrix() {
   const list = visibleTasks().filter(t => t.status !== 'done');
@@ -1350,7 +1362,7 @@ function renderKanban() {
     }).join('');
     return `<section class="column kanban-column"><h3>${statusLabels[s]}</h3><p class="column-sub">${items.length} задач · ${groups.size} проектов</p>${body || '<div class="empty">Пусто</div>'}</section>`;
   };
-  return `<section class="section-head"><div><h2>Канбан</h2><p>${mode === 'compact' ? 'Компактно: статус → проект → задачи-ссылки.' : 'Подробно: полные карточки задач по статусам и проектам.'}</p></div><div class="task-actions"><button class="ghost ${mode === 'compact' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="compact" type="button">Компактно</button><button class="ghost ${mode === 'detailed' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="detailed" type="button">Подробно</button></div></section><div class="kanban-grid kanban-${mode}">${statuses.map(renderColumn).join('')}</div>`;
+  return `${newestPulledTasksBanner()}<section class="section-head"><div><h2>Канбан</h2><p>${mode === 'compact' ? 'Компактно: статус → проект → задачи-ссылки.' : 'Подробно: полные карточки задач по статусам и проектам.'}</p></div><div class="task-actions"><button class="ghost ${mode === 'compact' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="compact" type="button">Компактно</button><button class="ghost ${mode === 'detailed' ? 'active-toggle' : ''}" data-action="setKanbanMode" data-mode="detailed" type="button">Подробно</button></div></section><div class="kanban-grid kanban-${mode}">${statuses.map(renderColumn).join('')}</div>`;
 }
 
 function renderProjectMembers(projectId) {
@@ -2016,7 +2028,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.12.3</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.12.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -3174,6 +3186,7 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
 let syncEngineBusy = false;
 let stableSyncQueue = Promise.resolve();
 let stableSyncLastPullCount = 0;
+let lastPulledVisibleTaskIds = [];
 
 function syncEngineNow() {
   return nowISO();
@@ -3397,8 +3410,9 @@ async function syncEngineSyncNow({ silent = false } = {}) {
     }
     syncEngineBusy = true;
     setSyncState('синхронизация...', 'warn');
-    addSyncAudit('Cloud Pull Wins v2.12.3', 'старт: проверка dirty → полное чтение Supabase → прямое обновление списка');
+    addSyncAudit('Visible Pull v2.12.4', 'старт: проверка dirty → полное чтение Supabase → показать активные задачи');
     try {
+      const beforeActiveIds = new Set(activeTasks().map(t => t.id));
       const pending = await syncEnginePushPending({ silent:true });
       const cloudTasks = await syncEnginePullCloud({ silent:true });
       if (!cloudTasks) throw new Error('не удалось прочитать задачи из облака');
@@ -3414,25 +3428,37 @@ async function syncEngineSyncNow({ silent = false } = {}) {
         failed: failedCount
       });
 
-      // Reset visual filters after manual sync so newly pulled inbox tasks are visible immediately.
+      const afterActive = activeTasks();
+      const newIds = afterActive
+        .filter(t => !beforeActiveIds.has(t.id))
+        .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
+        .map(t => t.id);
+      lastPulledVisibleTaskIds = newIds;
+
+      // Reset visual filters after manual sync so pulled tasks are not hidden.
       if ($('searchInput')) $('searchInput').value = '';
       if ($('projectFilter')) $('projectFilter').value = 'all';
-      if (!silent && applied.inboxCount > 0) currentView = 'inbox';
+
+      // If there are inbox tasks, open Inbox. Otherwise open Kanban, where all active statuses are visible.
+      if (!silent) {
+        if (applied.inboxCount > 0) currentView = 'inbox';
+        else if (applied.activeCount > 0) currentView = 'kanban';
+      }
 
       if (failedCount) {
         setSyncState(`частично · ${summary}`, 'warn');
       } else {
         clearSyncErrorsAfterSuccess();
-        setSyncState(`синхронизировано · ${summary} · входящих ${applied.inboxCount}`, 'ok');
+        setSyncState(`синхронизировано · ${summary} · новых ${newIds.length}`, 'ok');
       }
 
-      addSyncAudit('Cloud Pull Wins v2.12.3', `${summary}; входящих ${applied.inboxCount}`);
+      addSyncAudit('Visible Pull v2.12.4', `${summary}; новых видимых ${newIds.length}`);
       render();
       return true;
     } catch (e) {
       const msg = e?.message || String(e);
-      recordAppError('Cloud Pull Wins sync now', msg);
-      addSyncAudit('Cloud Pull Wins ошибка', msg);
+      recordAppError('Visible Pull sync now', msg);
+      addSyncAudit('Visible Pull ошибка', msg);
       setSyncState('ошибка синхронизации: ' + msg, 'bad');
       if (!silent) alert(msg);
       render();

@@ -3655,3 +3655,12 @@ button:disabled {
 
 
 /* v2.12.3 Cloud Pull Wins */
+
+/* v2.12.4 Visible Pull */
+.cloud-pulled-banner {
+  margin-bottom: 14px;
+  border: 1px solid rgba(245, 158, 11, .35);
+}
+.compact-head {
+  margin-bottom: 10px;
+}
