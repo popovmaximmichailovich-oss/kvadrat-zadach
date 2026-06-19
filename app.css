@@ -3642,3 +3642,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* v2.12.0 Sync Engine v1 */
+.sync-engine-note { font-size: 12px; color: var(--muted); }
