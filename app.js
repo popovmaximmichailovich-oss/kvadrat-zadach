@@ -1,4 +1,4 @@
-const APP_VERSION = '2.12.1';
+const APP_VERSION = '2.12.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -478,7 +478,16 @@ function activeDecisions(projectId='') { return decisions.filter(d => !d.deleted
 function activeTaskTemplates() { return taskTemplates.filter(t => !t.deletedAt).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
 function activeProjectDocs(projectId='') { return projectDocs.filter(d => !d.deletedAt && (!projectId || d.projectId === projectId)).sort((a,b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')); }
 function activeAdminUsers() { return adminUsers.filter(u => !u.deletedAt).sort((a,b) => a.name.localeCompare(b.name, 'ru')); }
-function activeTasks() { return tasks.filter(t => !t.deletedAt); }
+
+function taskIsDeleted(t) {
+  if (!t) return false;
+  const v = t.deletedAt ?? t.deleted_at ?? null;
+  return Boolean(v && v !== 'null' && v !== 'undefined' && v !== '0');
+}
+
+function activeTasks() {
+  return tasks.map(normalizeTask).filter(t => !taskIsDeleted(t));
+}
 function activeWorkLogs() { return workLogs.filter(l => !l.deletedAt); }
 function projectById(id) { return id ? projects.find(p => p.id === id && !p.deletedAt) : null; }
 function projectName(id, fallback = '') {
@@ -575,6 +584,7 @@ function visibleTasks() {
   const q = $('searchInput')?.value.trim().toLowerCase() || '';
   const p = $('projectFilter')?.value || 'all';
   return activeTasks().filter(t => {
+    if (taskIsDeleted(t)) return false;
     const pName = projectName(t.projectId, t.project);
     const hay = [t.title, pName, t.note, t.status, t.priority].join(' ').toLowerCase();
     const okSearch = !q || hay.includes(q);
@@ -722,6 +732,8 @@ function taskToneClass(t) {
   return 'task-tone-normal';
 }
 function taskCard(t) {
+  t = normalizeTask(t);
+  if (taskIsDeleted(t)) return '';
   const overdue = isOverdue(t);
   const pName = projectName(t.projectId, t.project);
   const statusText = statusLabels[t.status] || t.status;
@@ -755,7 +767,7 @@ function taskCard(t) {
   </article>`;
 }
 function listHtml(list, emptyText = 'Задач нет') {
-  const items = sortTasks(list);
+  const items = sortTasks((list || []).map(normalizeTask).filter(t => !taskIsDeleted(t)));
   if (!items.length) return `<div class="empty">${emptyText}</div>`;
   return `<div class="task-list">${items.map(taskCard).join('')}</div>`;
 }
@@ -2004,7 +2016,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.12.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.12.2</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -3044,16 +3056,18 @@ async function fetchCloudTasksForUser(client, userId) {
 
 function taskSyncCandidateIds({ onlyDirty = false } = {}) {
   const ids = new Set();
-  if (onlyDirty) {
-    if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.forEach(id => ids.add(id));
+  if (onlyDirty && typeof dirtyTaskIds !== 'undefined') {
+    dirtyTaskIds.forEach(id => ids.add(id));
   } else {
     tasks.forEach(t => {
       const n = normalizeTask(t);
-      if (!n.deletedAt) ids.add(n.id);
+      if (n.id) ids.add(n.id);
     });
-    if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.forEach(id => ids.add(id));
   }
-  return [...ids].filter(Boolean);
+  return [...ids].filter(id => {
+    const t = tasks.find(x => normalizeTask(x).id === id);
+    return Boolean(t);
+  });
 }
 function shouldLocalOverrideCloud(local, cloud) {
   if (!local) return false;
@@ -3295,40 +3309,64 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
     if (n.id) cloudById.set(n.id, n);
   });
 
-  const nextById = new Map(cloudById);
+  const nextById = new Map();
 
-  // Preserve only real unsent local changes. Everything else follows Supabase.
+  // First apply every cloud row. If Supabase says deleted_at is filled,
+  // this is a tombstone and it always wins over any local copy.
+  cloudById.forEach((cloudTask, id) => {
+    nextById.set(id, cloudTask);
+    if (taskIsDeleted(cloudTask) && typeof dirtyTaskIds !== 'undefined') {
+      dirtyTaskIds.delete(id);
+    }
+  });
+
+  // Preserve only real unsent local changes that do not contradict a cloud tombstone.
   tasks.forEach(t => {
     const local = normalizeTask(t);
     if (!local.id) return;
+
+    const cloud = cloudById.get(local.id);
+
+    // Cloud deletion is final. Local data cannot resurrect the task.
+    if (cloud && taskIsDeleted(cloud)) {
+      nextById.set(local.id, cloud);
+      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(local.id);
+      return;
+    }
+
     const isDirty = typeof dirtyTaskIds !== 'undefined' && dirtyTaskIds.has(local.id);
     if (!isDirty) return;
 
-    const cloud = cloudById.get(local.id);
+    // Local deletion also wins locally until it is pushed.
+    if (taskIsDeleted(local)) {
+      nextById.set(local.id, local);
+      return;
+    }
+
     const localTime = stableSyncCompareTime(local.updatedAt || local.deletedAt || local.createdAt);
     const cloudTime = stableSyncCompareTime(cloud?.updatedAt || cloud?.deletedAt || cloud?.createdAt);
 
-    // If cloud already has the same/newer state, server wins and dirty is cleared.
+    // If cloud has the same/newer state, server wins and dirty is cleared.
     if (cloud && cloudTime >= localTime) {
       dirtyTaskIds.delete(local.id);
       nextById.set(local.id, cloud);
       return;
     }
 
-    // Otherwise keep unsent local change until it is explicitly acknowledged by Supabase.
+    // Otherwise keep unsent local active change until it is explicitly acknowledged.
     nextById.set(local.id, local);
   });
 
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
 
-  tasks = [...nextById.values()].sort((a, b) =>
+  tasks = [...nextById.values()].map(normalizeTask).sort((a, b) =>
     String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
   );
 
   persistAll({ renderNow:false, sync:false });
 
-  const activeCount = tasks.filter(t => !normalizeTask(t).deletedAt).length;
-  const deletedCount = tasks.filter(t => normalizeTask(t).deletedAt).length;
+  const activeCount = tasks.filter(t => !taskIsDeleted(t)).length;
+  const deletedCount = tasks.filter(t => taskIsDeleted(t)).length;
   syncDiagnostics.localTasks = activeCount;
   syncDiagnostics.remoteTasks = activeCount;
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
