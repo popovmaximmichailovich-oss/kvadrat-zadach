@@ -1,4 +1,4 @@
-const APP_VERSION = '2.12.0';
+const APP_VERSION = '2.12.1';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -2004,7 +2004,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.12.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.12.1</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -3021,13 +3021,24 @@ function clearSyncErrorsAfterSuccess() {
 }
 
 async function fetchCloudTasksForUser(client, userId) {
-  const { data, error } = await client.from('tasks')
-    .select('*')
-    .eq('user_id', userId)
-    .order('updated_at', { ascending:false })
-    .limit(1000);
-  if (error) throw error;
-  return (data || []).map(rowToTask).map(normalizeTask);
+  const pageSize = 1000;
+  let from = 0;
+  let all = [];
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await client.from('tasks')
+      .select('*')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending:false })
+      .range(from, to);
+    if (error) throw error;
+    const chunk = data || [];
+    all = all.concat(chunk);
+    if (chunk.length < pageSize) break;
+    from += pageSize;
+    if (from > 20000) throw new Error('Слишком много строк задач для одной загрузки');
+  }
+  return all.map(rowToTask).map(normalizeTask);
 }
 
 
@@ -3076,20 +3087,38 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
     try {
       const fixedId = (typeof ensureTaskCloudReady === 'function' ? (ensureTaskCloudReady(originalId) || originalId) : originalId);
       const task = (typeof localTaskById === 'function' ? localTaskById(fixedId) : tasks.find(t => t.id === fixedId));
-      if (!task) continue;
+      if (!task) {
+        if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(originalId);
+        continue;
+      }
       const row = cloudSafeTaskPayload(task, userId);
-      const { error } = await client.from('tasks').upsert(row, { onConflict:'id' });
+      const { data, error } = await client.from('tasks')
+        .upsert(row, { onConflict:'id' })
+        .select('id,updated_at,deleted_at,title')
+        .maybeSingle();
       if (error) throw error;
+      if (!data?.id) throw new Error('Supabase не вернул подтверждение строки');
       sent += 1;
       if (typeof dirtyTaskIds !== 'undefined') {
         dirtyTaskIds.delete(fixedId);
         dirtyTaskIds.delete(originalId);
       }
+      const idx = tasks.findIndex(t => t.id === fixedId || t.id === originalId);
+      if (idx >= 0) {
+        tasks[idx] = normalizeTask({
+          ...tasks[idx],
+          id: data.id,
+          updatedAt: data.updated_at || tasks[idx].updatedAt,
+          deletedAt: data.deleted_at || tasks[idx].deletedAt || null
+        });
+      }
     } catch (e) {
       failed.push(`${originalId}: ${e.message || e}`);
+      if (typeof markTaskDirty === 'function') markTaskDirty(originalId);
     }
   }
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
+  persistAll({ renderNow:false, sync:false });
   return { sent, failed, attempted: uniqueIds.length };
 }
 
@@ -3100,9 +3129,28 @@ async function pushLocalTasksLineByLine(client, userId, { onlyDirty = false } = 
    ============================== */
 
 let syncEngineBusy = false;
+let stableSyncQueue = Promise.resolve();
+let stableSyncLastPullCount = 0;
 
 function syncEngineNow() {
   return nowISO();
+}
+
+
+function stableSyncCompareTime(value) {
+  const t = new Date(value || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+function stableSyncProjectRef() {
+  const url = settings.supabaseUrl || DEFAULT_SUPABASE_URL || '';
+  return (url.match(/^https:\/\/([^.]+)\.supabase\.co$/) || [])[1] || '';
+}
+function stableSyncRunQueued(job) {
+  stableSyncQueue = stableSyncQueue.then(job, job);
+  return stableSyncQueue;
+}
+function stableSyncBuildSummary({ pulled = 0, active = 0, deleted = 0, dirty = 0, pushed = 0, failed = 0 } = {}) {
+  return `облако: ${pulled} · активных ${active} · удалённых ${deleted} · отправлено ${pushed} · ошибок ${failed} · ожидает ${dirty}`;
 }
 
 async function syncEngineGetUser({ silent = false } = {}) {
@@ -3137,39 +3185,58 @@ function syncEngineRowToTask(row) {
 }
 
 async function syncEngineUpsertTask(taskId, { silent = true, reason = 'изменение задачи' } = {}) {
-  const pair = await syncEngineGetUser({ silent });
-  if (!pair) {
-    markTaskDirty(taskId);
-    return false;
-  }
-  const { client, user } = pair;
-  const originalId = taskId;
-  const fixedId = (typeof ensureTaskCloudReady === 'function' ? (ensureTaskCloudReady(originalId) || originalId) : originalId);
-  const task = (typeof localTaskById === 'function' ? localTaskById(fixedId) : tasks.find(t => t.id === fixedId));
-  if (!task) return false;
-  try {
-    const row = syncEngineTaskToRow(task, user.id);
-    const { error } = await client.from('tasks').upsert(row, { onConflict:'id' });
-    if (error) throw error;
-    if (typeof dirtyTaskIds !== 'undefined') {
-      dirtyTaskIds.delete(originalId);
-      dirtyTaskIds.delete(fixedId);
-      saveDirtyTaskIds();
+  return stableSyncRunQueued(async () => {
+    const pair = await syncEngineGetUser({ silent });
+    if (!pair) {
+      markTaskDirty(taskId);
+      return false;
     }
-    syncDiagnostics.lastPushAt = new Date().toLocaleString('ru-RU');
-    syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-    setSyncState(`${reason}: сохранено в облаке`, 'ok');
-    addSyncAudit('задача сохранена', `${reason}: ${task.title || fixedId}`);
-    return true;
-  } catch (e) {
-    const msg = e?.message || String(e);
-    markTaskDirty(fixedId);
-    recordAppError('Sync Engine upsert', msg);
-    addSyncAudit('ожидает отправки', `${reason}: ${msg}`);
-    setSyncState(`${reason}: сохранено локально, облако позже`, 'warn');
-    if (!silent) alert(msg);
-    return false;
-  }
+    const { client, user } = pair;
+    const originalId = taskId;
+    const fixedId = (typeof ensureTaskCloudReady === 'function' ? (ensureTaskCloudReady(originalId) || originalId) : originalId);
+    const task = (typeof localTaskById === 'function' ? localTaskById(fixedId) : tasks.find(t => t.id === fixedId));
+    if (!task) return false;
+    try {
+      const row = syncEngineTaskToRow(task, user.id);
+      const { data, error } = await client.from('tasks')
+        .upsert(row, { onConflict:'id' })
+        .select('id,updated_at,deleted_at,title')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data?.id) throw new Error('Supabase не вернул подтверждение сохранения');
+
+      const idx = tasks.findIndex(t => t.id === fixedId || t.id === originalId);
+      if (idx >= 0) {
+        tasks[idx] = normalizeTask({
+          ...tasks[idx],
+          id: data.id,
+          updatedAt: data.updated_at || tasks[idx].updatedAt,
+          deletedAt: data.deleted_at || tasks[idx].deletedAt || null
+        });
+      }
+
+      if (typeof dirtyTaskIds !== 'undefined') {
+        dirtyTaskIds.delete(originalId);
+        dirtyTaskIds.delete(fixedId);
+        saveDirtyTaskIds();
+      }
+      persistAll({ renderNow:false, sync:false });
+
+      syncDiagnostics.lastPushAt = new Date().toLocaleString('ru-RU');
+      syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
+      setSyncState(`${reason}: сохранено в облаке`, 'ok');
+      addSyncAudit('задача сохранена', `${reason}: ${task.title || fixedId}`);
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      markTaskDirty(fixedId);
+      recordAppError('Stable Sync upsert', msg);
+      addSyncAudit('ожидает отправки', `${reason}: ${msg}`);
+      setSyncState(`${reason}: сохранено локально, облако позже`, 'warn');
+      if (!silent) alert(msg);
+      return false;
+    }
+  });
 }
 
 async function syncEnginePushPending({ silent = true } = {}) {
@@ -3192,16 +3259,28 @@ async function syncEnginePullCloud({ silent = true } = {}) {
   if (!pair) return null;
   const { client, user } = pair;
   try {
-    const { data, error } = await client.from('tasks')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending:false })
-      .limit(1000);
-    if (error) throw error;
-    return (data || []).map(syncEngineRowToTask).map(normalizeTask);
+    const pageSize = 1000;
+    let from = 0;
+    let all = [];
+    while (true) {
+      const to = from + pageSize - 1;
+      const { data, error } = await client.from('tasks')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('updated_at', { ascending:false })
+        .range(from, to);
+      if (error) throw error;
+      const chunk = data || [];
+      all = all.concat(chunk);
+      if (chunk.length < pageSize) break;
+      from += pageSize;
+      if (from > 20000) throw new Error('Слишком много строк задач для одной синхронизации');
+    }
+    stableSyncLastPullCount = all.length;
+    return all.map(syncEngineRowToTask).map(normalizeTask);
   } catch (e) {
     const msg = e?.message || String(e);
-    recordAppError('Sync Engine pull', msg);
+    recordAppError('Stable Sync pull', msg);
     addSyncAudit('ошибка загрузки задач', msg);
     setSyncState('ошибка загрузки задач: ' + msg, 'bad');
     if (!silent) alert(msg);
@@ -3211,22 +3290,43 @@ async function syncEnginePullCloud({ silent = true } = {}) {
 
 function syncEngineApplyCloudTasks(cloudTasks = []) {
   const cloudById = new Map();
-  cloudTasks.forEach(t => {
+  (cloudTasks || []).forEach(t => {
     const n = normalizeTask(t);
-    cloudById.set(n.id, n);
+    if (n.id) cloudById.set(n.id, n);
   });
-  const localById = new Map();
+
+  const nextById = new Map(cloudById);
+
+  // Preserve only real unsent local changes. Everything else follows Supabase.
   tasks.forEach(t => {
-    const n = normalizeTask(t);
-    localById.set(n.id, n);
+    const local = normalizeTask(t);
+    if (!local.id) return;
+    const isDirty = typeof dirtyTaskIds !== 'undefined' && dirtyTaskIds.has(local.id);
+    if (!isDirty) return;
+
+    const cloud = cloudById.get(local.id);
+    const localTime = stableSyncCompareTime(local.updatedAt || local.deletedAt || local.createdAt);
+    const cloudTime = stableSyncCompareTime(cloud?.updatedAt || cloud?.deletedAt || cloud?.createdAt);
+
+    // If cloud already has the same/newer state, server wins and dirty is cleared.
+    if (cloud && cloudTime >= localTime) {
+      dirtyTaskIds.delete(local.id);
+      nextById.set(local.id, cloud);
+      return;
+    }
+
+    // Otherwise keep unsent local change until it is explicitly acknowledged by Supabase.
+    nextById.set(local.id, local);
   });
-  cloudById.forEach((cloudTask, id) => {
-    localById.set(id, cloudTask);
-  });
-  tasks = [...localById.values()].sort((a, b) =>
+
+  if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
+
+  tasks = [...nextById.values()].sort((a, b) =>
     String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
   );
+
   persistAll({ renderNow:false, sync:false });
+
   const activeCount = tasks.filter(t => !normalizeTask(t).deletedAt).length;
   const deletedCount = tasks.filter(t => normalizeTask(t).deletedAt).length;
   syncDiagnostics.localTasks = activeCount;
@@ -3234,52 +3334,66 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
   syncDiagnostics.lastPullAt = syncDiagnostics.lastCheckedAt;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  return { activeCount, deletedCount, totalCount: tasks.length };
+  return { activeCount, deletedCount, totalCount: tasks.length, pulledCount: cloudTasks.length };
 }
 
 async function syncEngineSyncNow({ silent = false } = {}) {
-  if (syncEngineBusy) {
-    setSyncState('синхронизация уже выполняется', 'warn');
-    return false;
-  }
-  syncEngineBusy = true;
-  setSyncState('синхронизация...', 'warn');
-  addSyncAudit('Sync Engine v1', 'старт: отправка ожидающих → чтение Supabase → обновление кэша');
-  try {
-    const pending = await syncEnginePushPending({ silent:true });
-    const cloudTasks = await syncEnginePullCloud({ silent:true });
-    if (!cloudTasks) throw new Error('не удалось прочитать задачи из облака');
-    const applied = syncEngineApplyCloudTasks(cloudTasks);
-    if (pending.failed && pending.failed.length) {
-      setSyncState(`частично · активных ${applied.activeCount} · удалённых ${applied.deletedCount} · не отправлено ${pending.failed.length}`, 'warn');
-    } else {
-      clearSyncErrorsAfterSuccess();
-      setSyncState(`синхронизировано · активных ${applied.activeCount} · удалённых ${applied.deletedCount} · ожидает ${dirtyTaskCount()}`, 'ok');
+  return stableSyncRunQueued(async () => {
+    if (syncEngineBusy) {
+      setSyncState('синхронизация уже выполняется', 'warn');
+      return false;
     }
-    addSyncAudit('Sync Engine v1', `готово: активных ${applied.activeCount}, удалённых ${applied.deletedCount}, всего в кэше ${applied.totalCount}`);
-    render();
-    return true;
-  } catch (e) {
-    const msg = e?.message || String(e);
-    recordAppError('Sync Engine sync now', msg);
-    addSyncAudit('Sync Engine ошибка', msg);
-    setSyncState('ошибка синхронизации: ' + msg, 'bad');
-    if (!silent) alert(msg);
-    render();
-    return false;
-  } finally {
-    syncEngineBusy = false;
-  }
+    syncEngineBusy = true;
+    setSyncState('синхронизация...', 'warn');
+    addSyncAudit('Stable Sync v2.12.1', 'старт: отправка ожидающих → полное чтение Supabase → пересборка кэша');
+    try {
+      const pending = await syncEnginePushPending({ silent:true });
+      const cloudTasks = await syncEnginePullCloud({ silent:true });
+      if (!cloudTasks) throw new Error('не удалось прочитать задачи из облака');
+
+      const applied = syncEngineApplyCloudTasks(cloudTasks);
+      const failedCount = pending.failed ? pending.failed.length : 0;
+      const summary = stableSyncBuildSummary({
+        pulled: applied.pulledCount,
+        active: applied.activeCount,
+        deleted: applied.deletedCount,
+        dirty: dirtyTaskCount(),
+        pushed: pending.sent || 0,
+        failed: failedCount
+      });
+
+      if (failedCount) {
+        setSyncState(`частично · ${summary}`, 'warn');
+      } else {
+        clearSyncErrorsAfterSuccess();
+        setSyncState(`синхронизировано · ${summary}`, 'ok');
+      }
+
+      addSyncAudit('Stable Sync v2.12.1', summary);
+      render();
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      recordAppError('Stable Sync sync now', msg);
+      addSyncAudit('Stable Sync ошибка', msg);
+      setSyncState('ошибка синхронизации: ' + msg, 'bad');
+      if (!silent) alert(msg);
+      render();
+      return false;
+    } finally {
+      syncEngineBusy = false;
+    }
+  });
 }
 
 function syncEngineAutoPullSoon(reason = 'автообновление', delay = 800) {
-  if (syncEngineBusy) return;
-  if (!syncDiagnostics.userId) return;
-  clearTimeout(window.__syncEngineAutoPullTimer);
-  window.__syncEngineAutoPullTimer = setTimeout(() => {
-    if (document.hidden) return;
-    syncEngineSyncNow({ silent:true });
-  }, delay);
+  // v2.12.1: auto-pull is intentionally disabled.
+  // It caused races with create/delete upserts. Use the single manual button to pull cloud state.
+  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
+    updateAutoSyncUi(`есть ожидающие изменения · нажмите «Синхронизировать»`, 'warn');
+    return;
+  }
+  updateAutoSyncUi('обновление вручную: нажмите «Синхронизировать»', 'idle');
 }
 
 async function simpleOneButtonSync() {
@@ -3481,9 +3595,12 @@ async function forceAutoSyncNow() {
 }
 
 function scheduleAutoSync(delay = 900) {
-  // v2.10.0: фоновые автоперерисовки отключены, чтобы iPhone не дёргал страницу.
-  // Локальные изменения сохраняются и помечаются на отправку.
-  updateAutoSyncUi('изменения сохранены локально · нажмите «Синхронизировать задачи»', 'warn');
+  // v2.12.1: automatic background pull is disabled. Writes are immediate; pull is manual.
+  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
+    updateAutoSyncUi(`ожидает отправки задач: ${dirtyTaskCount()} · нажмите «Синхронизировать»`, 'warn');
+  } else {
+    updateAutoSyncUi('изменения сохранены · для обновления другого устройства нажмите «Синхронизировать»', 'idle');
+  }
 }
 
 async function sendMagicLink() {

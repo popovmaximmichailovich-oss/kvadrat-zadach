@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-12-0-sync-engine-v1';
+const CACHE = 'kvadrat-zadach-v2-12-1-stable-cloud-sync';
 const ASSETS = [
   './',
   './index.html',
