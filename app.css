@@ -3664,3 +3664,12 @@ button:disabled {
 .compact-head {
   margin-bottom: 10px;
 }
+
+
+/* v2.12.5 Active Pull Only */
+
+/* v2.13.0 Live Sync */
+.cloud-pulled-banner {
+  margin-bottom: 14px;
+  border: 1px solid rgba(245, 158, 11, .35);
+}

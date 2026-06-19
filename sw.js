@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v2-12-4-visible-pull';
+const CACHE = 'kvadrat-zadach-v2-13-0-live-sync';
 const ASSETS = [
   './',
   './index.html',

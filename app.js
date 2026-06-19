@@ -1,4 +1,4 @@
-const APP_VERSION = '2.12.4';
+const APP_VERSION = '2.13.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -485,8 +485,26 @@ function taskIsDeleted(t) {
   return Boolean(v && v !== 'null' && v !== 'undefined' && v !== '0');
 }
 
+
+function purgeDeletedTasksFromWorkingState(reason = 'purge') {
+  const before = Array.isArray(tasks) ? tasks.length : 0;
+  tasks = (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t));
+  if (typeof dirtyTaskIds !== 'undefined') {
+    [...dirtyTaskIds].forEach(id => {
+      if (!tasks.some(t => t.id === id)) dirtyTaskIds.delete(id);
+    });
+    if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
+  }
+  persistAll({ renderNow:false, sync:false });
+  const after = tasks.length;
+  if (before !== after && typeof addSyncAudit === 'function') {
+    addSyncAudit('очистка удалённых', `${reason}: скрыто ${before - after}`);
+  }
+  return { before, after, removed: before - after };
+}
+
 function activeTasks() {
-  return tasks.map(normalizeTask).filter(t => !taskIsDeleted(t));
+  return (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t));
 }
 function activeWorkLogs() { return workLogs.filter(l => !l.deletedAt); }
 function projectById(id) { return id ? projects.find(p => p.id === id && !p.deletedAt) : null; }
@@ -584,7 +602,6 @@ function visibleTasks() {
   const q = $('searchInput')?.value.trim().toLowerCase() || '';
   const p = $('projectFilter')?.value || 'all';
   return activeTasks().filter(t => {
-    if (taskIsDeleted(t)) return false;
     const pName = projectName(t.projectId, t.project);
     const hay = [t.title, pName, t.note, t.status, t.priority].join(' ').toLowerCase();
     const okSearch = !q || hay.includes(q);
@@ -652,11 +669,19 @@ function addTask() {
 
 function deleteTask(id) {
   const task = tasks.find(t => t.id === id);
-  updateTask(id, { deletedAt: syncEngineNow() });
+  const deletedAt = syncEngineNow();
+  tasks = tasks.map(t => t.id === id ? normalizeTask({ ...t, deletedAt, updatedAt: deletedAt }) : t);
+  markTaskDirty(id);
+  saveTasks();
+  syncEngineUpsertTask(id, { silent:true, reason:'удаление задачи' }).finally(() => {
+    purgeDeletedTasksFromWorkingState('локальное удаление');
+    render();
+  });
   syncDiagnostics.localTasks = activeTasks().length;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
   setSyncState('задача удалена · сохраняем в облако', 'warn');
   addSyncAudit('удаление задачи', task ? `удалена: ${task.title}` : id);
+  purgeDeletedTasksFromWorkingState('удаление из интерфейса');
   render();
 }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -769,7 +794,7 @@ function taskCard(t) {
 function listHtml(list, emptyText = 'Задач нет') {
   const items = sortTasks((list || []).map(normalizeTask).filter(t => !taskIsDeleted(t)));
   if (!items.length) return `<div class="empty">${emptyText}</div>`;
-  return `<div class="task-list">${items.map(taskCard).join('')}</div>`;
+  return `<div class="task-list">${items.map(taskCard).filter(Boolean).join('')}</div>`;
 }
 function renderStats() {
   const a = activeTasks();
@@ -2028,7 +2053,7 @@ function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   return `<section class="settings-panel card user-sync-screen">
     <div><h2>Синхронизация и личное пространство</h2><p>Одно личное пространство на всех устройствах. Войдите под одним email и нажимайте одну кнопку «Синхронизировать».</p></div>
-    <div class="notice"><strong>Версия 2.12.4</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
+    <div class="notice"><strong>Версия 2.13.0</strong> · ${PERSONAL_MODE_TEXT} · Статус: ${escapeHtml(syncState.text)}. <span id="autoSyncInline" class="stat">полуавтоматическая синхронизация</span></div>
     ${personalSpaceBadge()}
     ${renderSafeSyncStatusCard()}
     ${renderSyncLab()}
@@ -2438,6 +2463,7 @@ function applyVisibleViews() {
   });
 }
 function render() {
+  tasks = (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t));
   document.body.dataset.currentView = currentView;
   renderProjectOptions();
   renderStats();
@@ -2472,6 +2498,7 @@ function render() {
 }
 
 async function logoutCloud() {
+  taskLiveStop();
   const client = getSupabaseClient();
   if (!client) return;
   try { await client.auth.signOut({ scope:'local' }); } catch (e) { console.warn(e); }
@@ -2907,6 +2934,7 @@ async function refreshAuthState({ renderNow = false } = {}) {
     syncDiagnostics.email = session.user.email || settings.email || '';
     syncDiagnostics.lastError = '';
     setSyncState(`вход выполнен · ${session.user.email || session.user.id.slice(0,8)}`, 'ok');
+    taskLiveStart({ reason:'auth' });
     if (renderNow) render();
     return true;
   }
@@ -3187,6 +3215,15 @@ let syncEngineBusy = false;
 let stableSyncQueue = Promise.resolve();
 let stableSyncLastPullCount = 0;
 let lastPulledVisibleTaskIds = [];
+let taskLiveChannel = null;
+let taskLiveUserId = '';
+let taskLiveFallbackTimer = null;
+let taskLivePullTimer = null;
+let taskLivePullBusy = false;
+let taskLiveStatus = 'idle';
+let taskLiveLastEventAt = '';
+let taskLiveLastPullAt = '';
+
 
 function syncEngineNow() {
   return nowISO();
@@ -3282,6 +3319,7 @@ async function syncEngineUpsertTask(taskId, { silent = true, reason = 'изме�
       syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
       setSyncState(`${reason}: сохранено в облаке`, 'ok');
       addSyncAudit('задача сохранена', `${reason}: ${task.title || fixedId}`);
+      taskLiveSchedulePull('after local upsert', 1200, { visual:false });
       return true;
     } catch (e) {
       const msg = e?.message || String(e);
@@ -3345,32 +3383,37 @@ async function syncEnginePullCloud({ silent = true } = {}) {
 }
 
 function syncEngineApplyCloudTasks(cloudTasks = []) {
-  const cloudById = new Map();
-  (cloudTasks || []).forEach(t => {
-    const n = normalizeTask(t);
-    if (n.id) cloudById.set(n.id, n);
-  });
+  const normalizedCloud = (cloudTasks || []).map(normalizeTask).filter(t => t.id);
+  const cloudById = new Map(normalizedCloud.map(t => [t.id, t]));
+  const cloudDeletedIds = new Set(normalizedCloud.filter(taskIsDeleted).map(t => t.id));
 
+  // Cloud tombstone is final: clear any dirty state for rows deleted in Supabase.
+  if (typeof dirtyTaskIds !== 'undefined') {
+    cloudDeletedIds.forEach(id => dirtyTaskIds.delete(id));
+  }
+
+  // Working state must contain active tasks only.
   const nextById = new Map();
-  const cloudTombstoneIds = new Set();
 
-  cloudById.forEach((cloudTask, id) => {
-    nextById.set(id, cloudTask);
-    if (taskIsDeleted(cloudTask)) {
-      cloudTombstoneIds.add(id);
-      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(id);
+  normalizedCloud.forEach(cloudTask => {
+    if (!taskIsDeleted(cloudTask)) {
+      nextById.set(cloudTask.id, cloudTask);
     }
   });
 
-  // v2.12.3: Supabase is the working list source.
-  // Keep local dirty rows only if Supabase does not know them yet.
-  tasks.forEach(t => {
-    const local = normalizeTask(t);
+  // Keep local offline-created dirty active tasks only if Supabase does not know them yet.
+  (tasks || []).map(normalizeTask).forEach(local => {
     if (!local.id) return;
 
-    if (cloudTombstoneIds.has(local.id)) {
+    // Deleted local tasks are not kept in the working list.
+    if (taskIsDeleted(local)) {
       if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(local.id);
-      nextById.set(local.id, cloudById.get(local.id));
+      return;
+    }
+
+    // If Supabase has a tombstone, local active copy cannot return.
+    if (cloudDeletedIds.has(local.id)) {
+      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(local.id);
       return;
     }
 
@@ -3378,22 +3421,21 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
     const existsInCloud = cloudById.has(local.id);
 
     if (isDirty && !existsInCloud) {
-      // Offline-created local task not yet in Supabase. Preserve it until a confirmed push.
       nextById.set(local.id, local);
     }
   });
 
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
 
-  tasks = [...nextById.values()].map(normalizeTask).sort((a, b) =>
+  tasks = [...nextById.values()].map(normalizeTask).filter(t => !taskIsDeleted(t)).sort((a, b) =>
     String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
   );
 
   persistAll({ renderNow:false, sync:false });
 
-  const activeCount = tasks.filter(t => !taskIsDeleted(t)).length;
-  const deletedCount = tasks.filter(t => taskIsDeleted(t)).length;
-  const inboxCount = tasks.filter(t => !taskIsDeleted(t) && (t.status || 'inbox') === 'inbox').length;
+  const activeCount = tasks.length;
+  const deletedCount = cloudDeletedIds.size;
+  const inboxCount = tasks.filter(t => (t.status || 'inbox') === 'inbox').length;
   syncDiagnostics.localTasks = activeCount;
   syncDiagnostics.remoteTasks = activeCount;
   syncDiagnostics.lastCheckedAt = new Date().toLocaleString('ru-RU');
@@ -3428,6 +3470,7 @@ async function syncEngineSyncNow({ silent = false } = {}) {
         failed: failedCount
       });
 
+      purgeDeletedTasksFromWorkingState('после синхронизации');
       const afterActive = activeTasks();
       const newIds = afterActive
         .filter(t => !beforeActiveIds.has(t.id))
@@ -3454,6 +3497,7 @@ async function syncEngineSyncNow({ silent = false } = {}) {
 
       addSyncAudit('Visible Pull v2.12.4', `${summary}; новых видимых ${newIds.length}`);
       render();
+      taskLiveStart({ reason:'manual-sync' });
       return true;
     } catch (e) {
       const msg = e?.message || String(e);
@@ -3470,13 +3514,199 @@ async function syncEngineSyncNow({ silent = false } = {}) {
 }
 
 function syncEngineAutoPullSoon(reason = 'автообновление', delay = 800) {
-  // v2.12.1: auto-pull is intentionally disabled.
-  // It caused races with create/delete upserts. Use the single manual button to pull cloud state.
-  if (typeof dirtyTaskCount === 'function' && dirtyTaskCount() > 0) {
-    updateAutoSyncUi(`есть ожидающие изменения · нажмите «Синхронизировать»`, 'warn');
+  taskLiveSchedulePull(reason, delay, { visual:true });
+}
+
+
+/* ==============================
+   v2.13.0 Live Sync
+   Realtime + polling fallback. Supabase remains the source of truth.
+   ============================== */
+
+function taskLiveStatusText() {
+  const parts = [];
+  parts.push(taskLiveStatus || 'idle');
+  if (taskLiveLastPullAt) parts.push('pull ' + taskLiveLastPullAt);
+  if (taskLiveLastEventAt) parts.push('event ' + taskLiveLastEventAt);
+  return parts.join(' · ');
+}
+
+function taskLiveSetStatus(status, tone = 'ok') {
+  taskLiveStatus = status;
+  if (typeof updateAutoSyncUi === 'function') updateAutoSyncUi('Live Sync: ' + taskLiveStatusText(), tone);
+}
+
+function taskLiveShouldAutoShow(newIds = []) {
+  return Array.isArray(newIds) && newIds.length > 0 && !document.hidden;
+}
+
+function taskLiveRememberNewTasks(beforeIds) {
+  const afterActive = activeTasks();
+  const newIds = afterActive
+    .filter(t => !beforeIds.has(t.id))
+    .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
+    .map(t => t.id);
+  if (newIds.length) {
+    lastPulledVisibleTaskIds = [...new Set([...newIds, ...(lastPulledVisibleTaskIds || [])])].slice(0, 20);
+  }
+  return newIds;
+}
+
+function taskLiveAutoOpenForNewTasks(newIds = []) {
+  if (!taskLiveShouldAutoShow(newIds)) return;
+  const pulled = newIds.map(id => activeTasks().find(t => t.id === id)).filter(Boolean);
+  if (!pulled.length) return;
+  if ($('searchInput')) $('searchInput').value = '';
+  if ($('projectFilter')) $('projectFilter').value = 'all';
+  if (pulled.some(t => (t.status || 'inbox') === 'inbox')) currentView = 'inbox';
+  else currentView = 'kanban';
+}
+
+function taskLiveApplyRow(row, reason = 'realtime') {
+  if (!row?.id) return;
+  const beforeIds = new Set(activeTasks().map(t => t.id));
+  const incoming = normalizeTask(rowToTask(row));
+
+  if (taskIsDeleted(incoming)) {
+    tasks = (tasks || []).map(normalizeTask).filter(t => t.id !== incoming.id);
+    if (typeof dirtyTaskIds !== 'undefined') {
+      dirtyTaskIds.delete(incoming.id);
+      if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
+    }
+    persistAll({ renderNow:false, sync:false });
+    taskLiveLastEventAt = new Date().toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    taskLiveSetStatus('удаление принято из облака', 'ok');
+    render();
     return;
   }
-  updateAutoSyncUi('обновление вручную: нажмите «Синхронизировать»', 'idle');
+
+  const byId = new Map((tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t)).map(t => [t.id, t]));
+  byId.set(incoming.id, incoming);
+  tasks = [...byId.values()].sort((a, b) =>
+    String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
+  );
+  persistAll({ renderNow:false, sync:false });
+  const newIds = taskLiveRememberNewTasks(beforeIds);
+  taskLiveAutoOpenForNewTasks(newIds);
+  taskLiveLastEventAt = new Date().toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  taskLiveSetStatus(`${reason}: обновлено ${incoming.title || incoming.id}`, 'ok');
+  render();
+}
+
+function taskLiveSchedulePull(reason = 'live', delay = 600, { visual = true } = {}) {
+  clearTimeout(taskLivePullTimer);
+  taskLivePullTimer = setTimeout(() => taskLivePull({ reason, visual }), delay);
+}
+
+async function taskLivePull({ reason = 'poll', visual = true } = {}) {
+  if (taskLivePullBusy || syncEngineBusy) return false;
+  taskLivePullBusy = true;
+  try {
+    const beforeIds = new Set(activeTasks().map(t => t.id));
+    const cloudTasks = await syncEnginePullCloud({ silent:true });
+    if (!cloudTasks) return false;
+    const applied = syncEngineApplyCloudTasks(cloudTasks);
+    purgeDeletedTasksFromWorkingState('live pull');
+    const newIds = taskLiveRememberNewTasks(beforeIds);
+    if (visual) taskLiveAutoOpenForNewTasks(newIds);
+    taskLiveLastPullAt = new Date().toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    if (newIds.length) {
+      taskLiveSetStatus(`${reason}: новых ${newIds.length}`, 'ok');
+    } else {
+      taskLiveSetStatus(`${reason}: актуально · активных ${applied.activeCount}`, 'ok');
+    }
+    render();
+    return true;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    recordAppError('Live Sync pull', msg);
+    taskLiveSetStatus('ошибка pull: ' + msg, 'warn');
+    return false;
+  } finally {
+    taskLivePullBusy = false;
+  }
+}
+
+function taskLiveStartFallbackPolling() {
+  if (taskLiveFallbackTimer) clearInterval(taskLiveFallbackTimer);
+  taskLiveFallbackTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (!syncDiagnostics.userId) return;
+    taskLivePull({ reason:'poll', visual:true });
+  }, 5000);
+}
+
+function taskLiveStop() {
+  const client = getSupabaseClient();
+  try {
+    if (client && taskLiveChannel) client.removeChannel(taskLiveChannel);
+  } catch (e) {
+    console.warn('Live channel remove warning:', e);
+  }
+  taskLiveChannel = null;
+  taskLiveUserId = '';
+  if (taskLiveFallbackTimer) clearInterval(taskLiveFallbackTimer);
+  taskLiveFallbackTimer = null;
+  if (taskLivePullTimer) clearTimeout(taskLivePullTimer);
+  taskLivePullTimer = null;
+  taskLiveSetStatus('остановлена', 'idle');
+}
+
+async function taskLiveStart({ force = false, reason = 'start' } = {}) {
+  const pair = await syncEngineGetUser({ silent:true });
+  if (!pair) return false;
+  const { client, user } = pair;
+  if (!client?.channel) {
+    taskLiveSetStatus('Realtime недоступен · включён polling', 'warn');
+    taskLiveStartFallbackPolling();
+    taskLiveSchedulePull('start', 500, { visual:false });
+    return true;
+  }
+
+  if (!force && taskLiveChannel && taskLiveUserId === user.id) {
+    taskLiveStartFallbackPolling();
+    taskLiveSchedulePull(reason, 500, { visual:false });
+    return true;
+  }
+
+  taskLiveStop();
+  taskLiveUserId = user.id;
+  taskLiveSetStatus('подключение...', 'warn');
+
+  try {
+    const channelName = `kvadrat_tasks_${user.id}_${Date.now()}`;
+    taskLiveChannel = client.channel(channelName)
+      .on('postgres_changes', { event:'INSERT', schema:'public', table:'tasks', filter:`user_id=eq.${user.id}` }, payload => {
+        if (payload?.new) taskLiveApplyRow(payload.new, 'insert');
+        else taskLiveSchedulePull('insert event', 300);
+      })
+      .on('postgres_changes', { event:'UPDATE', schema:'public', table:'tasks', filter:`user_id=eq.${user.id}` }, payload => {
+        if (payload?.new) taskLiveApplyRow(payload.new, 'update');
+        else taskLiveSchedulePull('update event', 300);
+      })
+      .on('postgres_changes', { event:'DELETE', schema:'public', table:'tasks' }, payload => {
+        const id = payload?.old?.id;
+        if (id) {
+          tasks = (tasks || []).map(normalizeTask).filter(t => t.id !== id);
+          persistAll({ renderNow:false, sync:false });
+          render();
+        } else {
+          taskLiveSchedulePull('delete event', 300);
+        }
+      })
+      .subscribe(status => {
+        if (status === 'SUBSCRIBED') taskLiveSetStatus('Realtime подключён', 'ok');
+        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') taskLiveSetStatus('Realtime нестабилен · работает polling', 'warn');
+        else taskLiveSetStatus('Realtime: ' + status, 'warn');
+      });
+  } catch (e) {
+    taskLiveSetStatus('Realtime ошибка · работает polling', 'warn');
+    console.warn('Live sync subscribe failed:', e);
+  }
+
+  taskLiveStartFallbackPolling();
+  taskLiveSchedulePull(reason, 700, { visual:false });
+  return true;
 }
 
 async function simpleOneButtonSync() {
@@ -3727,6 +3957,7 @@ async function verifyEmailCode() {
   syncDiagnostics.lastError = '';
   setSyncState(`вход выполнен · ${syncDiagnostics.email || settings.email}`, 'ok');
   await refreshAuthState({ renderNow:false });
+  await taskLiveStart({ force:true, reason:'otp' });
   await syncTasksBothWays({ silent:true });
   render();
   alert('Вход выполнен. Это устройство подключено к вашему личному пространству.');
@@ -3955,7 +4186,8 @@ function boot() {
   $('quickAddBtn').onclick = addTask;
   $('quickTitle').addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
   $('fieldPlanDate').value = today();
-  document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => { currentView = btn.dataset.view; render(); });
+  document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => { currentView = btn.dataset.view; render();
+  setTimeout(() => taskLiveStart({ reason:'boot' }), 1200); });
   $('searchInput').oninput = render;
   $('projectFilter').onchange = render;
   $('editForm').onsubmit = saveEdit;
@@ -3970,8 +4202,8 @@ boot();
 
 
 // v2.12.0 auto sync hooks: gentle, no interval.
-window.addEventListener('online', () => syncEngineAutoPullSoon('online', 1200));
+window.addEventListener('online', () => { taskLiveStart({ reason:'online' }); taskLiveSchedulePull('online', 400, { visual:true }); });
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) syncEngineAutoPullSoon('visibility', 1200);
+  if (!document.hidden) { taskLiveStart({ reason:'visibility' }); taskLiveSchedulePull('visibility', 400, { visual:true }); }
 });
-window.addEventListener('focus', () => syncEngineAutoPullSoon('focus', 1500));
+window.addEventListener('focus', () => { taskLiveStart({ reason:'focus' }); taskLiveSchedulePull('focus', 500, { visual:true }); });
