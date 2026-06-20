@@ -1,0 +1,23 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Квадрат задач</title>
+  <desc id="desc">Тёмная квадратная иконка приложения Квадрат задач с монограммой К</desc>
+  <defs>
+    <linearGradient id="kzIconBg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#10243D"/>
+      <stop offset="1" stop-color="#07111F"/>
+    </linearGradient>
+    <linearGradient id="kzBlue" x1="575" y1="264" x2="770" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2F7BFF"/>
+      <stop offset="1" stop-color="#155BFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#kzIconBg)"/>
+
+  <g transform="translate(294 236) scale(5.55)">
+    <rect x="0" y="0" width="28" height="34" rx="4" fill="#FFFFFF"/>
+    <rect x="0" y="50" width="28" height="34" rx="4" fill="#FFFFFF"/>
+    <path d="M44 0H78C80.8 0 82.4 3.1 80.8 5.4L59.6 34H29.5L50.7 5.4C52.4 2.1 54.8 0 58 0Z" fill="url(#kzBlue)"/>
+    <path d="M29.5 50H59.6L81.5 79.5C83.1 81.8 81.5 85 78.6 85H44.5C41.9 85 39.4 83.7 37.9 81.5L16 50H29.5Z" fill="#FFFFFF"/>
+  </g>
+</svg>

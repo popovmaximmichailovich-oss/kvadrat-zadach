@@ -1,16 +1,19 @@
 <!doctype html>
 <html lang="ru">
 <head>
+  <!-- Квадрат задач: brand / PWA icons -->
+  <link rel="icon" type="image/svg+xml" href="assets/brand/logo-mark.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0F223A">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Квадрат задач">
+
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#111827" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Квадрат задач" />
   <title>Квадрат задач</title>
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="assets/icon-180.png" />
-  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="app.css" />
 
   <style id="executive-shell-critical-css">
@@ -138,11 +141,14 @@
     <header class="topbar app-topbar">
       <div class="brand-block">
         <p class="eyebrow">Executive project workspace</p>
-        <h1>Квадрат задач</h1>
+        <a class="app-logo" href="./" aria-label="Квадрат задач">
+          <img class="app-logo__mark" src="assets/brand/logo-mark.svg" alt="" aria-hidden="true">
+          <span class="app-logo__text">Квадрат задач</span>
+        </a>
         <p class="brand-subtitle">Операционный центр: день, проекты, риски, сроки, документы</p>
       </div>
       <div class="topbar-actions">
-        <span class="mode-pill">v2.13.0 · Live Sync</span>
+        <span class="mode-pill">v3.0.0 · Product Release Candidate</span>
         <button id="topSearchBtn" class="ghost top-action-btn top-search-btn" type="button">Поиск</button>
         <button id="topSyncBtn" class="ghost top-action-btn top-sync-btn" type="button">Синхронизация</button>
         <button id="topUpdateBtn" class="ghost top-action-btn hidden" type="button">Обновить приложение</button>
@@ -225,34 +231,34 @@
       </details>
     </section>
 
-    <nav class="tabs executive-nav" aria-label="Разделы приложения"><span class="nav-label">Навигация</span>
+    <nav class="tabs executive-nav clean-nav" aria-label="Разделы приложения"><span class="nav-label">Навигация</span>
       <button class="tab active" data-view="commander" type="button">День</button>
-      <button class="tab" data-view="today" type="button">Сегодня</button>
-      <button class="tab" data-view="tomorrow" type="button">Завтра</button>
-      <button class="tab" data-view="week" type="button">Неделя</button>
-      <button class="tab" data-view="dashboard" type="button">Дашборд</button>
-      <button class="tab" data-view="pmcontrol" type="button">Управление</button>
-      <button class="tab" data-view="report" type="button">Отчёт недели</button>
+      <button class="tab" data-view="mobile" type="button">Пульт</button>
       <button class="tab" data-view="inbox" type="button">Разбор</button>
-      <button class="tab" data-view="stuck" type="button">Зависло</button>
-      <button class="tab" data-view="delegate" type="button">Делегировать</button>
-      <button class="tab" data-view="noproject" type="button">Без проекта</button>
-      <button class="tab" data-view="matrix" type="button">Эйзенхауэр</button>
-      <button class="tab" data-view="kanban" type="button">Канбан</button>
       <button class="tab" data-view="projects" type="button">Проекты</button>
-      <button class="tab" data-view="promises" type="button">Обещания</button>
-      <button class="tab" data-view="decisions" type="button">Решения</button>
-      <button class="tab" data-view="templates" type="button">Шаблоны</button>
-      <button class="tab" data-view="evening" type="button">Вечер</button>
-      <button class="tab" data-view="searchall" type="button">Поиск</button>
-      <button class="tab" data-view="timesheet" type="button">Табель</button>
-      <button class="tab" data-view="archive" type="button">Архив</button>
-      <button class="tab" data-view="admin" type="button">Панель администратора</button>
+      <button class="tab" data-view="kanban" type="button">Канбан</button>
       <button class="tab" data-view="settings" type="button">Синхронизация</button>
-      <button class="tab" data-view="about" type="button">О приложении</button>
+      <details class="nav-more">
+        <summary>Ещё</summary>
+        <button class="tab" data-view="searchall" type="button">Поиск</button>
+        <button class="tab" data-view="templates" type="button">Шаблоны</button>
+        <button class="tab" data-view="today" type="button">Сегодня</button>
+        <button class="tab" data-view="tomorrow" type="button">Завтра</button>
+        <button class="tab" data-view="week" type="button">Неделя</button>
+        <button class="tab" data-view="pmcontrol" type="button">Управление</button>
+        <button class="tab" data-view="stuck" type="button">Зависло</button>
+        <button class="tab" data-view="delegate" type="button">Делегировать</button>
+        <button class="tab" data-view="noproject" type="button">Без проекта</button>
+        <button class="tab" data-view="promises" type="button">Обещания</button>
+        <button class="tab" data-view="decisions" type="button">Решения</button>
+        <button class="tab" data-view="evening" type="button">Вечер</button>
+        <button class="tab" data-view="timesheet" type="button">Табель</button>
+        <button class="tab" data-view="archive" type="button">Архив</button>
+        <button class="tab" data-view="about" type="button">О приложении</button>
+      </details>
     </nav>
 
-    <section class="mobile-actionbar" aria-label="Быстрая мобильная навигация"><button class="mobile-nav-btn" data-mobile-view="commander" type="button">День</button><button class="mobile-nav-btn" data-mobile-view="today" type="button">Сегодня</button><button class="mobile-nav-btn" data-mobile-view="pmcontrol" type="button">Упр.</button><button class="mobile-nav-btn mobile-search-btn" data-mobile-view="searchall" type="button">Поиск</button><button class="mobile-nav-btn" data-mobile-view="settings" type="button">Синхр.</button></section>
+    <section class="mobile-actionbar" aria-label="Быстрая мобильная навигация"><button class="mobile-nav-btn" data-mobile-view="commander" type="button">День</button><button class="mobile-nav-btn" data-mobile-view="mobile" type="button">Пульт</button><button class="mobile-nav-btn" data-mobile-view="inbox" type="button">Разбор</button><button class="mobile-nav-btn" data-mobile-view="projects" type="button">Проекты</button><button class="mobile-nav-btn" data-mobile-view="settings" type="button">Синхр.</button></section>
 
     <section class="toolbar card executive-toolbar">
       <div class="stats" id="stats"></div>

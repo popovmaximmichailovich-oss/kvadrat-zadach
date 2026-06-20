@@ -1,6 +1,16 @@
-const CACHE = 'kvadrat-zadach-v2-13-0-live-sync';
+const CACHE = 'kvadrat-zadach-v3-0-1-brand-logo';
 const ASSETS = [
-  './',
+    'assets/brand/logo-kz.svg',
+  'assets/brand/logo-mark.svg',
+  'assets/brand/app-icon.svg',
+  'assets/brand/app-icon-dark.svg',
+  'assets/icons/favicon-32x32.png',
+  'assets/icons/apple-touch-icon.png',
+  'assets/icons/pwa-192x192.png',
+  'assets/icons/pwa-512x512.png',
+  'assets/icons/pwa-maskable-192x192.png',
+  'assets/icons/pwa-maskable-512x512.png',
+'./',
   './index.html',
   './app.css',
   './app.js',

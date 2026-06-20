@@ -1,0 +1,23 @@
+<svg width="480" height="120" viewBox="0 0 480 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Квадрат задач</title>
+  <desc id="desc">Логотип приложения Квадрат задач: монограмма К и название</desc>
+  <defs>
+    <linearGradient id="kzBlue" x1="54" y1="18" x2="88" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2F7BFF"/>
+      <stop offset="1" stop-color="#155BFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Symbol: monogram K -->
+  <g transform="translate(18 16)">
+    <rect x="0" y="0" width="28" height="34" rx="4" fill="#0F223A"/>
+    <rect x="0" y="50" width="28" height="34" rx="4" fill="#0F223A"/>
+    <path d="M44 0H78C80.8 0 82.4 3.1 80.8 5.4L59.6 34H29.5L50.7 5.4C52.4 2.1 54.8 0 58 0Z" fill="url(#kzBlue)"/>
+    <path d="M29.5 50H59.6L81.5 79.5C83.1 81.8 81.5 85 78.6 85H44.5C41.9 85 39.4 83.7 37.9 81.5L16 50H29.5Z" fill="#0F223A"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="126" y="73" fill="#0F223A" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="42" font-weight="650" letter-spacing="-1.2">
+    Квадрат задач
+  </text>
+</svg>

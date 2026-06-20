@@ -3673,3 +3673,265 @@ button:disabled {
   margin-bottom: 14px;
   border: 1px solid rgba(245, 158, 11, .35);
 }
+
+
+/* v2.13.1 Reliable Write Queue */
+
+
+/* v2.14.0 No Data Loss + Clean Work Mode */
+.clean-settings {
+  display: grid;
+  gap: 14px;
+}
+.clean-page-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+.clean-sync-summary .sync-diagnostics-grid,
+.technical-diagnostics .sync-diagnostics-grid {
+  margin-top: 10px;
+}
+.technical-diagnostics {
+  opacity: .92;
+}
+.technical-diagnostics > summary,
+.nav-more > summary,
+.task-more-actions > summary {
+  cursor: pointer;
+  user-select: none;
+}
+.technical-diagnostics > summary {
+  font-weight: 900;
+  padding: 8px 0;
+}
+.diagnostic-mini {
+  font-size: 12px;
+}
+.sync-lab-card {
+  margin-top: 12px;
+}
+.clean-sync-actions {
+  min-width: 220px;
+}
+.clean-card-actions {
+  align-items: center;
+}
+.task-more-actions {
+  position: relative;
+}
+.task-more-actions > summary {
+  list-style: none;
+  border: 1px solid rgba(148,163,184,.22);
+  border-radius: 12px;
+  padding: 7px 11px;
+  font-weight: 900;
+}
+.task-more-actions > summary::-webkit-details-marker { display: none; }
+.task-more-menu {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+.nav-more {
+  margin-top: 6px;
+  border-top: 1px solid rgba(148,163,184,.12);
+  padding-top: 8px;
+}
+.nav-more > summary {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+.nav-more[open] > summary {
+  background: rgba(148,163,184,.08);
+}
+.nav-more .tab {
+  margin-top: 5px !important;
+}
+.quick-tag-add input:focus {
+  outline: 2px solid rgba(245,158,11,.55);
+  outline-offset: 2px;
+}
+@media (max-width: 860px) {
+  .clean-page-head {
+    display: block;
+  }
+  .clean-sync-actions {
+    min-width: 0;
+  }
+  .technical-diagnostics {
+    margin-bottom: 96px;
+  }
+}
+
+
+/* v3.0.0 Product Release Candidate */
+.product-onboarding-card,
+.smart-capture-card,
+.daily-ritual-card,
+.project-health-board,
+.process-template-panel,
+.save-journal-card {
+  border: 1px solid rgba(245,158,11,.24);
+}
+.product-onboarding-card {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+.onboarding-steps {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+.onboarding-steps span,
+.smart-examples button,
+.template-button,
+.health-row,
+.mobile-command-grid button,
+.ritual-grid button {
+  border: 1px solid rgba(148,163,184,.18);
+  border-radius: 16px;
+  background: rgba(15,23,42,.56);
+  color: #e5e7eb;
+}
+.onboarding-steps span {
+  padding: 9px 12px;
+  font-weight: 800;
+  font-size: 12px;
+}
+.smart-examples,
+.template-grid,
+.ritual-grid,
+.mobile-command-grid {
+  display: grid;
+  gap: 10px;
+}
+.smart-examples {
+  grid-template-columns: repeat(3, minmax(0,1fr));
+}
+.smart-examples button,
+.template-button,
+.mobile-command-grid button,
+.ritual-grid button {
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.template-grid {
+  grid-template-columns: repeat(3, minmax(0,1fr));
+}
+.template-button strong,
+.mobile-command-grid strong,
+.ritual-grid strong {
+  display:block;
+  font-size: 22px;
+}
+.template-button span,
+.mobile-command-grid span,
+.ritual-grid span {
+  display:block;
+  color:#94a3b8;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.health-list {
+  display:grid;
+  gap:8px;
+}
+.health-row {
+  width: 100%;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding: 12px;
+  text-align:left;
+}
+.health-row strong { display:block; }
+.health-row em { display:block; color:#94a3b8; font-style:normal; font-size:12px; margin-top:3px; }
+.health-row b { font-size:22px; }
+.health-row.ok b { color:#22c55e; }
+.health-row.warn b { color:#f59e0b; }
+.health-row.bad b { color:#ef4444; }
+.mobile-command-grid {
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  margin-bottom: 14px;
+}
+.ritual-grid {
+  grid-template-columns: repeat(4, minmax(0,1fr));
+}
+.journal-list {
+  display:grid;
+  gap: 7px;
+}
+.journal-row {
+  display:grid;
+  grid-template-columns: 145px 140px minmax(0,1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  border:1px solid rgba(148,163,184,.12);
+  border-radius: 12px;
+  background: rgba(15,23,42,.36);
+  font-size: 12px;
+}
+.journal-row span { color:#94a3b8; }
+.journal-row em { font-style:normal; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width: 860px) {
+  .product-onboarding-card,
+  .smart-examples,
+  .template-grid,
+  .ritual-grid,
+  .mobile-command-grid {
+    grid-template-columns: 1fr;
+  }
+  .journal-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* v3.0.1 Brand Logo */
+:root {
+  --kz-brand-dark: #0F223A;
+  --kz-brand-blue: #2563FF;
+  --kz-brand-bg: #F3F5F7;
+  --kz-brand-white: #FFFFFF;
+}
+.app-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--kz-brand-white);
+  text-decoration: none;
+  min-width: 0;
+}
+.app-logo__mark {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  display: block;
+}
+.app-logo__text {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  white-space: nowrap;
+}
+.app-logo--compact .app-logo__text { display: none; }
+.brand-header {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 30;
+}
+@media (max-width: 720px) {
+  .app-logo__mark { width: 34px; height: 34px; }
+  .app-logo__text { font-size: 18px; }
+}
