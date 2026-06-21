@@ -1,4 +1,4 @@
-const CACHE = 'kvadrat-zadach-v3-0-1-brand-logo';
+const CACHE = 'kvadrat-zadach-v3-0-2-stability-work-console';
 const ASSETS = [
     'assets/brand/logo-kz.svg',
   'assets/brand/logo-mark.svg',

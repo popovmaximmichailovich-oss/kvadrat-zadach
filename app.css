@@ -3935,3 +3935,18 @@ button:disabled {
   .app-logo__mark { width: 34px; height: 34px; }
   .app-logo__text { font-size: 18px; }
 }
+
+
+/* v3.0.2 Stability & Work Console */
+.work-screen-head,.work-summary-card,.workspace-settings-card,.project-console,.save-journal-card,.technical-diagnostics{padding:22px;}
+.work-screen-head{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;}
+.work-metrics-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:12px 0 16px;}
+.work-metrics-grid>div{border:1px solid rgba(148,163,184,.16);border-radius:16px;padding:14px;background:rgba(15,23,42,.38);}
+.work-metrics-grid strong{display:block;font-size:26px;line-height:1;}.work-metrics-grid span{display:block;color:#94a3b8;margin-top:6px;font-size:12px;}
+.nav-more-bottom{margin-top:auto;padding-top:14px;}
+.project-create-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:14px;}
+.project-create-row input,.project-name-input{width:100%;border:1px solid rgba(148,163,184,.22);border-radius:14px;background:rgba(15,23,42,.52);color:#e5e7eb;padding:11px 12px;font:inherit;}
+.project-console-list{display:grid;gap:10px;}.project-console-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;border:1px solid rgba(148,163,184,.14);border-radius:18px;padding:14px;background:rgba(15,23,42,.34);}.project-console-main small{display:block;color:#94a3b8;margin-top:6px;}
+.preset-row,.workspace-view-grid{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;}.preset-btn,.workspace-toggle{border:1px solid rgba(148,163,184,.18);background:rgba(15,23,42,.46);color:#e5e7eb;border-radius:999px;padding:9px 12px;font-weight:800;cursor:pointer;}.preset-btn.active,.workspace-toggle.active{border-color:rgba(37,99,255,.65);background:rgba(37,99,255,.18);}
+.work-task-card{padding:14px 16px;}.work-task-main{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;}.work-task-title{display:flex;gap:10px;min-width:0;}.work-task-title .task-title{margin:0;}.work-task-meta{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}.work-intro-card{padding:20px 22px;}.work-command-grid button strong{font-size:20px;}.technical-diagnostics[open]{border-color:rgba(37,99,255,.34);}
+@media(max-width:860px){.work-screen-head,.project-console-row,.work-task-main{display:block;}.work-metrics-grid,.project-create-row{grid-template-columns:1fr;}.work-task-meta{justify-content:flex-start;margin-top:8px;}}

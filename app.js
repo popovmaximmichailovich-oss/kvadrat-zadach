@@ -1,4 +1,4 @@
-const APP_VERSION = '3.0.1';
+const APP_VERSION = '3.0.2';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -481,6 +481,8 @@ function activeAdminUsers() { return adminUsers.filter(u => !u.deletedAt).sort((
 
 function taskIsDeleted(t) {
   if (!t) return false;
+  const id = t.id || '';
+  if (id && typeof tombstoneHas === 'function' && tombstoneHas(id)) return true;
   const v = t.deletedAt ?? t.deleted_at ?? null;
   return Boolean(v && v !== 'null' && v !== 'undefined' && v !== '0');
 }
@@ -504,7 +506,7 @@ function purgeDeletedTasksFromWorkingState(reason = 'purge') {
 }
 
 function activeTasks() {
-  return (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t));
+  return (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t) && !tombstoneHas(t.id));
 }
 function activeWorkLogs() { return workLogs.filter(l => !l.deletedAt); }
 function projectById(id) { return id ? projects.find(p => p.id === id && !p.deletedAt) : null; }
@@ -604,9 +606,7 @@ function visibleTasks() {
   return activeTasks().filter(t => {
     const pName = projectName(t.projectId, t.project);
     const hay = [t.title, pName, t.note, t.status, t.priority].join(' ').toLowerCase();
-    const okSearch = !q || hay.includes(q);
-    const okProject = p === 'all' || t.projectId === p;
-    return okSearch && okProject;
+    return (!q || hay.includes(q)) && (p === 'all' || t.projectId === p);
   });
 }
 function sortTasks(list) {
@@ -673,24 +673,20 @@ function addTask() {
 }
 
 function deleteTask(id) {
-  const task = tasks.find(t => t.id === id);
+  const task = tasks.find(t => normalizeTask(t).id === id);
   const deletedAt = syncEngineNow();
-  tasks = tasks.map(t => t.id === id ? normalizeTask({ ...t, deletedAt, updatedAt: deletedAt }) : t);
-  const deletedTask = tasks.find(t => t.id === id);
-  if (deletedTask) { safetyRecordTask(deletedTask, 'deleted'); saveJournalAdd('deleted-local', 'Удаление сохранено локально', deletedTask); }
-  markTaskDirty(id);
-  reliableQueueAdd(id);
-  persistAll({ renderNow:true, sync:false });
-  syncEngineUpsertTask(id, { silent:true, reason:'удаление задачи' });
-  reliableFlushWriteQueue({ silent:true, reason:'after delete' }).finally(() => {
-    purgeDeletedTasksFromWorkingState('локальное удаление');
-    render();
-  });
+  tombstoneAdd(id, 'user-delete');
+  const deletedPayload = normalizeTask({ ...(task || { id, title:'Удалённая задача' }), id, deletedAt, updatedAt: deletedAt });
+  safetyRecordTask(deletedPayload, 'deleted');
+  tasks = (tasks || []).map(normalizeTask).filter(t => t.id !== id);
+  persistAll({ renderNow:false, sync:false });
   syncDiagnostics.localTasks = activeTasks().length;
   syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  setSyncState('задача удалена · сохраняем в облако', 'warn');
+  setSyncState('задача удалена', 'ok');
+  saveJournalAdd('deleted-local', 'Удаление сохранено', deletedPayload);
   addSyncAudit('удаление задачи', task ? `удалена: ${task.title}` : id);
-  purgeDeletedTasksFromWorkingState('удаление из интерфейса');
+  // Direct cloud write for deletion. Do not keep deleted row in the working task list.
+  syncEngineUpsertDeletedTask(deletedPayload, { silent:true, reason:'удаление задачи' });
   render();
 }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
@@ -767,47 +763,23 @@ function taskToneClass(t) {
 }
 function taskCard(t) {
   t = normalizeTask(t);
-  if (taskIsDeleted(t)) return '';
+  if (taskIsDeleted(t) || tombstoneHas(t.id)) return '';
+  const cfg = workspaceRead();
   const overdue = isOverdue(t);
   const pName = projectName(t.projectId, t.project);
   const statusText = statusLabels[t.status] || t.status;
   const priorityText = priorityLabels[t.priority] || t.priority;
-  const mainAction = t.status !== 'done'
-    ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>`
-    : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
   const queued = typeof reliableQueueRead === 'function' && reliableQueueRead().includes(t.id);
-  return `<article class="task-card ux-card ux-task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
-    <div class="ux-card-head">
-      <div class="ux-title-wrap">
-        <span class="task-state-dot ux-dot"></span>
-        <div><p class="task-title ux-card-title">${escapeHtml(t.title)}</p><small>${escapeHtml(pName)}${queued ? ' · не отправлено' : ''}</small></div>
-      </div>
-      <span class="ux-status ${queued ? 'ux-status-danger' : overdue ? 'ux-status-danger' : t.status === 'doing' ? 'ux-status-work' : ''}">${queued ? 'не отправлено' : escapeHtml(statusText)}</span>
-    </div>
-    <div class="ux-card-meta">
-      <span class="badge priority-${t.priority}">${escapeHtml(priorityText)}</span>
-      ${t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок: ${dateLabel(t.dueDate)}</span>` : '<span class="badge muted-badge">без срока</span>'}
-      ${t.planDate ? `<span class="badge">план: ${dateLabel(t.planDate)}</span>` : ''}
-      ${t.dayBucket !== 'none' ? `<span class="badge">${bucketLabels[t.dayBucket]}</span>` : ''}
-    </div>
-    ${t.note ? `<p class="task-note ux-card-note">${escapeHtml(t.note)}</p>` : ''}
-    <div class="task-actions task-actions-compact ux-card-actions clean-card-actions">
-      ${mainAction}
-      <button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button>
-      <button class="mini-btn danger-mini" data-action="deleteTaskQuick" data-id="${t.id}" type="button">Удалить</button>
-      <details class="task-more-actions">
-        <summary>⋯</summary>
-        <div class="task-more-menu">
-          ${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}
-          ${t.planDate !== today() && t.status !== 'done' ? `<button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>` : ''}
-          ${t.projectId ? `<button class="mini-btn ghost-mini" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}
-        </div>
-      </details>
-    </div>
+  const mainAction = t.status !== 'done' ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>` : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
+  return `<article class="task-card ux-card ux-task-card work-task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
+    <div class="work-task-main"><div class="work-task-title"><span class="task-state-dot ux-dot"></span><div><p class="task-title ux-card-title">${escapeHtml(t.title)}</p><small>${cfg.cardFields.project ? escapeHtml(pName) : ''}${queued && cfg.cardFields.sync ? ' · не отправлено' : ''}</small></div></div>
+    <div class="work-task-meta">${cfg.cardFields.status ? `<span class="ux-status ${queued ? 'ux-status-danger' : overdue ? 'ux-status-danger' : t.status === 'doing' ? 'ux-status-work' : ''}">${queued ? 'не отправлено' : escapeHtml(statusText)}</span>` : ''}${cfg.cardFields.priority ? `<span class="badge priority-${t.priority}">${escapeHtml(priorityText)}</span>` : ''}${cfg.cardFields.dates && t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок ${dateLabel(t.dueDate)}</span>` : ''}${cfg.cardFields.dates && t.planDate ? `<span class="badge">делать ${dateLabel(t.planDate)}</span>` : ''}</div></div>
+    ${cfg.cardFields.note && t.note ? `<p class="task-note ux-card-note">${escapeHtml(t.note)}</p>` : ''}
+    <div class="task-actions task-actions-compact ux-card-actions clean-card-actions">${mainAction}<button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button><button class="mini-btn danger-mini" data-action="deleteTaskQuick" data-id="${t.id}" type="button">Удалить</button><details class="task-more-actions"><summary>⋯</summary><div class="task-more-menu">${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}${t.planDate !== today() && t.status !== 'done' ? `<button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>` : ''}${t.projectId ? `<button class="mini-btn ghost-mini" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}</div></details></div>
   </article>`;
 }
 function listHtml(list, emptyText = 'Задач нет') {
-  const items = sortTasks((list || []).map(normalizeTask).filter(t => !taskIsDeleted(t)));
+  const items = sortTasks((list || []).map(normalizeTask).filter(t => !taskIsDeleted(t) && !tombstoneHas(t.id)));
   if (!items.length) return `<div class="empty">${emptyText}</div>`;
   return `<div class="task-list">${items.map(taskCard).filter(Boolean).join('')}</div>`;
 }
@@ -1219,6 +1191,43 @@ function projectHealth(projectId) {
   return { tone:'green', title:'Зелёный', text:'в норме' };
 }
 
+
+/* ==============================
+   v3.0.2 Stability & Work Console
+   Hard local tombstones, stable UI state, workspace settings, project console.
+   ============================== */
+const TASK_TOMBSTONE_REGISTRY_KEY = 'kvadratTaskTombstones.v302';
+const UI_STATE_KEY = 'kvadratUiState.v302';
+const WORKSPACE_CONFIG_KEY = 'kvadratWorkspaceConfig.v302';
+function tombstoneRead(){try{const raw=localStorage.getItem(TASK_TOMBSTONE_REGISTRY_KEY);const obj=raw?JSON.parse(raw):{};return obj&&typeof obj==='object'&&!Array.isArray(obj)?obj:{}}catch{return {}}}
+function tombstoneWrite(obj){localStorage.setItem(TASK_TOMBSTONE_REGISTRY_KEY, JSON.stringify(obj||{}));}
+function tombstoneAdd(id, reason='deleted-local'){
+  if(!id) return;
+  const reg=tombstoneRead(); reg[id]={id,reason,at:nowISO()}; tombstoneWrite(reg);
+  if(typeof dirtyTaskIds!=='undefined'){dirtyTaskIds.delete(id); if(typeof saveDirtyTaskIds==='function') saveDirtyTaskIds();}
+  if(typeof reliableQueueRemove==='function') reliableQueueRemove(id);
+  if(typeof safetyMarkDeleted==='function') safetyMarkDeleted(id);
+}
+function tombstoneHas(id){return Boolean(id && tombstoneRead()[id]);}
+function isHardDeleted(t){const n=normalizeTask(t); return tombstoneHas(n.id)||taskIsDeleted(n);}
+function stripHardDeletedTasks(reason='strip'){
+  const before=Array.isArray(tasks)?tasks.length:0;
+  tasks=(tasks||[]).map(normalizeTask).filter(t=>!tombstoneHas(t.id)&&!taskIsDeleted(t));
+  const removed=before-tasks.length;
+  if(removed&&typeof addSyncAudit==='function') addSyncAudit('очистка удалённых', `${reason}: скрыто ${removed}`);
+  persistAll({renderNow:false,sync:false}); return removed;
+}
+function uiStateRead(){try{const raw=localStorage.getItem(UI_STATE_KEY);const obj=raw?JSON.parse(raw):{};return obj&&typeof obj==='object'?obj:{}}catch{return {}}}
+function uiStateWrite(patch){const next={...uiStateRead(),...(patch||{})};localStorage.setItem(UI_STATE_KEY, JSON.stringify(next));return next;}
+function detailsOpenFlag(key){return Boolean(uiStateRead()[key]);}
+function setDetailsOpenFlag(key,value){uiStateWrite({[key]:Boolean(value)});}
+function workspaceDefaults(){return {preset:'leader',visibleViews:['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings'],cardFields:{project:true,status:true,priority:true,dates:true,note:true,sync:true},homeBlocks:{today:true,inbox:true,risks:true,projects:true,sync:true},showDiagnostics:false};}
+function workspaceRead(){try{const raw=localStorage.getItem(WORKSPACE_CONFIG_KEY);const obj=raw?JSON.parse(raw):{};const d=workspaceDefaults();return {...d,...(obj||{}),cardFields:{...d.cardFields,...((obj||{}).cardFields||{})},homeBlocks:{...d.homeBlocks,...((obj||{}).homeBlocks||{})}}}catch{return workspaceDefaults()}}
+function workspaceWrite(next){localStorage.setItem(WORKSPACE_CONFIG_KEY, JSON.stringify(next));}
+function setWorkspacePreset(preset){const cfg=workspaceRead(); cfg.preset=preset; if(preset==='minimal') cfg.visibleViews=['commander','inbox','projects','settings']; if(preset==='executor') cfg.visibleViews=['commander','inbox','kanban','settings']; if(preset==='reviewer') cfg.visibleViews=['commander','projects','pmcontrol','decisions','settings']; if(preset==='leader') cfg.visibleViews=['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings']; workspaceWrite(cfg); render();}
+function toggleWorkspaceView(view){if(!view) return; const cfg=workspaceRead(); const set=new Set(cfg.visibleViews||[]); if(set.has(view)) set.delete(view); else set.add(view); cfg.visibleViews=[...set]; workspaceWrite(cfg); render();}
+function toggleWorkspaceDiagnostics(){const cfg=workspaceRead(); cfg.showDiagnostics=!cfg.showDiagnostics; workspaceWrite(cfg); render();}
+
 /* ==============================
    v3.0.0 Product Release Candidate
    Smart Capture, Product Onboarding, Save Journal, Project Health, Daily Ritual, Process Templates, Mobile Command.
@@ -1250,10 +1259,7 @@ function saveJournalAdd(kind, detail = '', task = null) {
 }
 function renderSaveJournalCard(limit = 8) {
   const list = saveJournalRead().slice(0, limit);
-  return `<section class="card save-journal-card">
-    <div class="section-head compact-head"><div><span class="view-kicker">журнал сохранения</span><h3>Что происходило с задачами</h3><p>Видно, что задача сохранена локально, поставлена в очередь или подтверждена облаком.</p></div></div>
-    <div class="journal-list">${list.map(x => `<div class="journal-row"><span>${new Date(x.at).toLocaleString('ru-RU')}</span><strong>${escapeHtml(x.kind)}</strong><em>${escapeHtml(x.title || x.detail)}</em></div>`).join('') || '<div class="empty">Журнал пока пуст</div>'}</div>
-  </section>`;
+  return `<section class="card save-journal-card"><div class="section-head compact-head"><div><span class="view-kicker">история</span><h3>История сохранения</h3><p>Последние операции с задачами.</p></div></div><div class="journal-list">${list.map(x=>`<div class="journal-row"><span>${new Date(x.at).toLocaleString('ru-RU')}</span><strong>${escapeHtml(x.kind)}</strong><em>${escapeHtml(x.title||x.detail)}</em></div>`).join('')||'<div class="empty">Операций пока нет</div>'}</div></section>`;
 }
 function dismissProductOnboarding() {
   localStorage.setItem(PRODUCT_ONBOARDING_KEY, '1');
@@ -1261,23 +1267,7 @@ function dismissProductOnboarding() {
 }
 function renderProductOnboardingCard() {
   if (localStorage.getItem(PRODUCT_ONBOARDING_KEY) === '1') return '';
-  return `<section class="card product-onboarding-card">
-    <div>
-      <span class="view-kicker">v3.0 product rc</span>
-      <h3>Квадрат задач — рабочая система руководителя</h3>
-      <p>Быстро записал, ничего не потерял, увидел на всех устройствах. В этой версии добавлены умный ввод, здоровье проектов, ритуалы дня и шаблоны процессов.</p>
-    </div>
-    <div class="onboarding-steps">
-      <span>1. Пиши задачу одной строкой</span>
-      <span>2. Проверяй «не отправлено»</span>
-      <span>3. Разбирай входящие</span>
-      <span>4. Контролируй проекты</span>
-    </div>
-    <div class="task-actions">
-      <button class="primary compact-primary" data-action="openMobileCommand" type="button">Открыть пульт</button>
-      <button class="ghost compact-primary" data-action="dismissProductOnboarding" type="button">Скрыть</button>
-    </div>
-  </section>`;
+  return `<section class="card product-onboarding-card work-intro-card"><div><span class="view-kicker">рабочая версия</span><h3>Задачи, проекты, сроки</h3><p>Добавьте задачу, привяжите её к проекту и контролируйте статус. Если задача не ушла в облако, она остаётся локально и видна в очереди.</p></div><div class="task-actions"><button class="primary compact-primary" data-action="focusQuickInput" type="button">Добавить задачу</button><button class="ghost compact-primary" data-action="dismissProductOnboarding" type="button">Скрыть</button></div></section>`;
 }
 function parseRussianDateToken(text) {
   const lower = String(text || '').toLowerCase();
@@ -1396,18 +1386,7 @@ function renderMobileCommand() {
   const inbox = activeTasks().filter(t => t.status === 'inbox');
   const todayList = activeTasks().filter(t => t.planDate === today() && t.status !== 'done');
   const overdue = activeTasks().filter(isOverdue);
-  return `<section class="section-head"><div><span class="view-kicker">iphone-пульт</span><h2>Пульт руководителя</h2><p>Минимум экранов: записать, разобрать, посмотреть сегодня, проверить сохранение.</p></div></section>
-  ${renderSmartCaptureCard()}
-  <section class="mobile-command-grid">
-    <button data-action="focusQuickInput" type="button"><strong>+</strong><span>Новая задача</span></button>
-    <button data-action="openInboxFromStats" type="button"><strong>${inbox.length}</strong><span>Разбор</span></button>
-    <button data-action="filterTodayFromStats" type="button"><strong>${todayList.length}</strong><span>Сегодня</span></button>
-    <button data-action="showRiskSummary" type="button"><strong>${overdue.length}</strong><span>Риски</span></button>
-    <button data-action="openSyncFromStats" type="button"><strong>${queue}</strong><span>Не отправлено</span></button>
-    <button data-action="startEveningReview" type="button"><strong>↺</strong><span>Вечер</span></button>
-  </section>
-  ${renderDailyRitualCard()}
-  ${renderProjectHealthBoard(4)}`;
+  return `<section class="section-head"><div><span class="view-kicker">пульт</span><h2>Рабочий пульт</h2><p>Быстрый доступ к главным действиям: добавить, разобрать, проверить сроки и сохранение.</p></div></section>${renderSmartCaptureCard()}<section class="mobile-command-grid work-command-grid"><button data-action="focusQuickInput" type="button"><strong>+</strong><span>Новая задача</span></button><button data-action="openInboxFromStats" type="button"><strong>${inbox.length}</strong><span>Разбор</span></button><button data-action="filterTodayFromStats" type="button"><strong>${todayList.length}</strong><span>Сегодня</span></button><button data-action="showRiskSummary" type="button"><strong>${overdue.length}</strong><span>Просрочено</span></button><button data-action="openSyncFromStats" type="button"><strong>${queue}</strong><span>Не отправлено</span></button><button data-action="startEveningReview" type="button"><strong>↺</strong><span>Вечер</span></button></section>${renderDailyRitualCard()}${renderProjectHealthBoard(4)}`;
 }
 const PROCESS_TEMPLATES_V3 = {
   mtz: {
@@ -1562,21 +1541,8 @@ function renderSafeSyncStatusCard() {
   const queue = typeof reliableQueueCount === 'function' ? reliableQueueCount() : dirtyTaskCount();
   const safety = typeof safetyLedgerCount === 'function' ? safetyLedgerCount() : 0;
   const title = queue > 0 ? `Не отправлено: ${queue}` : (s.tone === 'ok' ? 'Всё сохранено' : s.title);
-  const text = queue > 0
-    ? 'Задачи сохранены локально и будут отправлены в облако. Они не исчезнут при синхронизации.'
-    : (s.text || 'Синхронизация работает в безопасном режиме.');
-  return `<section class="safe-sync-card card sync-${queue > 0 ? 'warn' : s.tone}">
-    <div>
-      <span class="view-kicker">синхронизация</span>
-      <h3>${escapeHtml(title)}</h3>
-      <p>${escapeHtml(text)}</p>
-      <p class="auto-sync-note">Локально активных: ${activeTasks().length} · очередь: ${queue} · защита: ${safety}</p>
-    </div>
-    <div class="task-actions clean-sync-actions">
-      <button class="primary compact-primary" id="forceAutoSyncNow" type="button">${queue > 0 ? 'Отправить сейчас' : 'Обновить'}</button>
-      <button class="ghost compact-primary" data-action="recoverMissingLocalTasks" type="button">Дожать очередь</button>
-    </div>
-  </section>`;
+  const text = queue > 0 ? 'Задачи сохранены на этом устройстве и ждут отправки.' : 'Задачи сохранены. Можно работать.';
+  return `<section class="safe-sync-card card sync-${queue>0?'warn':s.tone}"><div><span class="view-kicker">сохранение</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p><p class="auto-sync-note">Активных: ${activeTasks().length} · очередь: ${queue} · защита: ${safety}</p></div><div class="task-actions clean-sync-actions"><button class="primary compact-primary" id="forceAutoSyncNow" type="button">${queue>0?'Отправить сейчас':'Обновить'}</button><button class="ghost compact-primary" data-action="recoverMissingLocalTasks" type="button">Дожать очередь</button></div></section>`;
 }
 function renderHomeAuthStatusCard() {
   const signedIn = Boolean(syncDiagnostics.userId);
@@ -1725,51 +1691,16 @@ function renderProjectPassport(p) {
     </div>
   </details>`;
 }
+
+function renderProjectConsoleRow(p){const h=projectHealth(p.id);const count=activeTasks().filter(t=>t.projectId===p.id).length;return `<article class="project-console-row" data-project-id="${p.id}"><div class="project-console-main"><input class="project-name-input" value="${escapeHtml(p.name)}" data-project-id="${p.id}" aria-label="Название проекта"/><small>${count} задач · здоровье ${h.score} · ${h.overdue} просрочено</small></div><div class="task-actions"><button class="mini-btn" data-action="saveProjectName" data-project-id="${p.id}" type="button">Сохранить</button><button class="mini-btn" data-action="archiveProject" data-project-id="${p.id}" type="button">Архив</button><button class="mini-btn danger-mini" data-action="deleteProjectOnly" data-project-id="${p.id}" type="button">Удалить проект</button></div></article>`;}
+function createProjectFromConsole(){const input=$('newProjectName');const name=input?.value.trim();if(!name)return alert('Укажите название проекта.');const p=normalizeProject({name,status:'active',startDate:today()});projects.unshift(p);persistAll({renderNow:false,sync:false});if(input)input.value='';render();}
+function saveProjectName(id){const input=document.querySelector(`.project-name-input[data-project-id="${CSS.escape(id)}"]`);const name=input?.value.trim();if(!name)return alert('Название проекта не должно быть пустым.');projects=projects.map(p=>p.id===id?normalizeProject({...p,name,updatedAt:nowISO()}):p);tasks=tasks.map(t=>t.projectId===id?normalizeTask({...t,project:name,updatedAt:nowISO()}):t);persistAll({renderNow:false,sync:false});render();}
+function archiveProject(id){projects=projects.map(p=>p.id===id?normalizeProject({...p,status:'archived',updatedAt:nowISO()}):p);persistAll({renderNow:false,sync:false});render();}
+function deleteProjectOnly(id){const p=projects.find(x=>x.id===id);if(!p)return;const linked=activeTasks().filter(t=>t.projectId===id).length;if(!confirm(`Удалить проект «${p.name}»? Задачи не удалятся, они станут без проекта. Связанных задач: ${linked}.`))return;projects=projects.filter(p=>p.id!==id);tasks=tasks.map(t=>t.projectId===id?normalizeTask({...t,projectId:'',project:'',updatedAt:nowISO()}):t);persistAll({renderNow:false,sync:false});render();}
+
 function renderProjects() {
-  const list = visibleTasks().filter(t => t.status !== 'done');
-  const ym = currentMonth();
-  const cards = activeProjects({ includeArchived: true }).map(p => {
-    const items = list.filter(t => t.projectId === p.id);
-    const m = projectMetrics(p.id);
-    const h = projectHealth(p.id);
-    const progress = projectProgress(p);
-    return `${renderProjectHealthBoard(10)}<section class="column project-card ux-card ux-project-card ${p.status === 'archived' ? 'project-muted' : ''} ${projectColorClass(p)} health-${h.tone}" data-project-id-card="${p.id}">
-      <div class="ux-card-head">
-        <div class="ux-title-wrap"><span class="color-dot"></span><div><h3 class="ux-card-title">${escapeHtml(p.name)}</h3><small>${escapeHtml(p.stage || p.owner || 'проект')}</small></div></div>
-        <span class="ux-status">${projectStatusLabels[p.status] || p.status}</span>
-      </div>
-      <div class="ux-progress"><i style="width:${progress}%"></i></div>
-      <div class="metric-row ux-metrics"><span><strong>${m.open}</strong> открыто</span><span><strong>${m.overdue}</strong> просрочено</span><span><strong>${m.hoursMonth}</strong> ч за ${monthTitle(ym)}</span><span><strong>${m.members}</strong> участн.</span></div>
-      <p class="task-note ux-card-note"><strong>${h.title}:</strong> ${escapeHtml(h.text)}${p.description ? ' · ' + escapeHtml(p.description) : ''}</p>
-      <div class="task-actions ux-card-actions">
-        <button class="mini-btn primary-mini" data-action="quickLogProject" data-project-id="${p.id}" type="button">Отметить сегодня</button>
-        <button class="mini-btn" data-action="filterProject" data-project-id="${p.id}" type="button">Задачи</button>
-        <button class="mini-btn" data-action="archiveProject" data-project-id="${p.id}" type="button">${p.status === 'archived' ? 'Активировать' : 'В архив'}</button>
-      </div>
-      ${renderProjectPassport(p)}
-      <div class="ux-card-list">${listHtml(items, 'Открытых задач нет')}</div>
-    </section>`;
-  }).join('');
-  return `<section class="section-head"><div><h2>Проекты</h2><p>Единая карточка проекта: статус, прогресс, риски, задачи, паспорт и быстрые действия.</p></div></section>
-    <section class="card project-form-card">
-      <h3>Создать проект</h3>
-      <div class="project-form-grid">
-        <label>Название проекта *<input id="newProjectName" placeholder="Например: МЗМО, РДКБ, Сколтех" /></label>
-        <label>Код / быстрый тег<input id="newProjectCode" placeholder="Например: МЗМО" /></label>
-        <label>Статус<select id="newProjectStatus"><option value="active">Активный</option><option value="paused">Пауза</option><option value="archived">Архив</option></select></label>
-        <label>Цвет<select id="newProjectColor">
-          <option value="orange">Оранжевый</option><option value="amber">Янтарный</option><option value="yellow">Жёлтый</option><option value="lime">Лайм</option><option value="green">Зелёный</option><option value="emerald">Изумрудный</option><option value="teal">Бирюзовый</option><option value="cyan">Голубой</option><option value="blue">Синий</option><option value="indigo">Индиго</option><option value="violet">Фиолетовый</option><option value="purple">Пурпурный</option><option value="pink">Розовый</option><option value="rose">Роза</option><option value="red">Красный</option><option value="gray">Серый</option>
-        </select></label>
-        <label>Ответственный<input id="newProjectOwner" placeholder="Кто ведёт" /></label>
-        <label>Заказчик / направление<input id="newProjectCustomer" placeholder="Для кого / направление" /></label>
-        <label>Стадия<input id="newProjectStage" placeholder="МТЗ, АПР, проектирование..." /></label>
-        <label>Контрольный срок<input id="newProjectDueDate" type="date" /></label>
-      </div>
-      <label class="full-label">Краткое описание<textarea id="newProjectDescription" rows="2" placeholder="Что входит в проект, зачем он нужен"></textarea></label>
-      <label class="full-label">Комментарий<textarea id="newProjectNote" rows="2" placeholder="Риски, вводные, особенности"></textarea></label>
-      <div class="task-actions"><button class="primary" id="createProjectBtn" type="button">Создать проект</button></div>
-    </section>
-    <div class="grid-2 ux-card-grid">${cards || '<div class="empty">Проектов пока нет</div>'}</div>`;
+  const active = activeProjects();
+  return `<section class="section-head"><div><span class="view-kicker">проекты</span><h2>Проекты и контроль</h2><p>Создавайте, переименовывайте, архивируйте и удаляйте проекты. Задачи без отдельного подтверждения не удаляются.</p></div></section>${renderProjectHealthBoard(8)}<section class="card project-console"><div class="project-create-row"><input id="newProjectName" placeholder="Новый проект" autocomplete="off"/><button class="primary compact-primary" data-action="createProjectFromConsole" type="button">Создать проект</button></div><div class="project-console-list">${active.map(p=>renderProjectConsoleRow(p)).join('')||'<div class="empty">Проектов пока нет</div>'}</div></section>`;
 }
 function renderArchive() {
   const list = visibleTasks().filter(t => t.status === 'done');
@@ -2351,80 +2282,19 @@ function syncLabPick(id) {
   syncLabSet(syncLabState.selectedId ? 'тестовая задача выбрана' : 'выбор сброшен', syncLabState.selectedId ? 'ok' : 'warn');
 }
 
+
+function renderWorkspaceSettingsCard() {
+  const cfg = workspaceRead();
+  const available = [['commander','День'],['inbox','Разбор'],['projects','Проекты'],['kanban','Канбан'],['mobile','Пульт'],['pmcontrol','Управление'],['decisions','Решения'],['settings','Синхронизация'],['searchall','Поиск'],['today','Сегодня'],['tomorrow','Завтра'],['week','Неделя'],['stuck','Зависло'],['delegate','Делегировать'],['noproject','Без проекта'],['promises','Обещания'],['timesheet','Табель'],['archive','Архив'],['about','О приложении']];
+  return `<section class="card workspace-settings-card"><div class="section-head compact-head"><div><span class="view-kicker">настройка пространства</span><h3>Что показывать в приложении</h3><p>Выберите режим и разделы меню.</p></div></div><div class="preset-row">${['leader','executor','reviewer','minimal'].map(p=>`<button class="preset-btn ${cfg.preset===p?'active':''}" data-action="workspacePreset" data-preset="${p}" type="button">${p==='leader'?'Руководитель':p==='executor'?'Исполнитель':p==='reviewer'?'Проверяющий':'Минимальный'}</button>`).join('')}</div><div class="workspace-view-grid">${available.map(([id,label])=>`<button class="workspace-toggle ${cfg.visibleViews.includes(id)?'active':''}" data-action="toggleWorkspaceView" data-view-id="${id}" type="button">${escapeHtml(label)}</button>`).join('')}</div><div class="task-actions sync-actions"><button class="ghost" data-action="toggleWorkspaceDiagnostics" type="button">${cfg.showDiagnostics?'Скрыть диагностику':'Показывать диагностику'}</button></div></section>`;
+}
+
 function renderSettings() {
   const signedIn = Boolean(syncDiagnostics.userId);
   const queue = typeof reliableQueueCount === 'function' ? reliableQueueCount() : dirtyTaskCount();
   const safety = typeof safetyLedgerCount === 'function' ? safetyLedgerCount() : 0;
-  return `<section class="settings-panel clean-settings user-sync-screen">
-    <section class="card clean-page-head">
-      <div>
-        <span class="view-kicker">личное пространство</span>
-        <h2>Синхронизация</h2>
-        <p>Одна рабочая кнопка и защита от потери задач. Техническая диагностика спрятана ниже.</p>
-      </div>
-      <span class="device-login-status ${signedIn ? 'ok' : 'warn'}">${signedIn ? 'вход выполнен' : 'нужен вход'}</span>
-    </section>
-
-    ${renderSafeSyncStatusCard()}
-
-    <section class="device-login-card card">
-      <div class="device-login-head">
-        <div>
-          <span class="view-kicker">вход на устройстве</span>
-          <h3>${signedIn ? 'Это устройство подключено' : 'Подключить это устройство'}</h3>
-          <p>${signedIn ? 'Сессия активна. Задачи будут отправляться в облако.' : 'Введите email, получите код и войдите.'}</p>
-        </div>
-        <span class="device-login-status ${signedIn ? 'ok' : 'warn'}">${signedIn ? 'подключено' : 'не подключено'}</span>
-      </div>
-
-      <div class="email-code-grid">
-        <label>Email личного пространства
-          <input id="syncEmail" value="${escapeHtml(settings.email || '')}" placeholder="name@example.com" inputmode="email" autocomplete="email" />
-        </label>
-        <label>Код из письма
-          <input id="emailOtpCode" value="" placeholder="6 цифр из письма" inputmode="numeric" autocomplete="one-time-code" maxlength="12" />
-        </label>
-      </div>
-
-      <div class="task-actions sync-actions">
-        <button class="primary" id="sendEmailCode" type="button">Получить код</button>
-        <button class="primary" id="verifyEmailCode" type="button">Войти</button>
-        ${signedIn ? '<button class="ghost" id="logoutCloud" type="button">Выйти</button>' : ''}
-      </div>
-    </section>
-
-    <section class="card clean-sync-summary">
-      <h3>Кратко</h3>
-      <div class="sync-diagnostics-grid">
-        <div><strong>Локально задач:</strong> ${activeTasks().length}</div>
-        <div><strong>Очередь отправки:</strong> ${queue}</div>
-        <div><strong>Локальная защита:</strong> ${safety}</div>
-        <div><strong>Последняя операция:</strong> ${escapeHtml(latestSyncAuditText() || 'нет')}</div>
-        <div><strong>Последняя ошибка:</strong> ${escapeHtml(lastAppErrorText() || syncDiagnostics.lastError || 'нет')}</div>
-        <div><strong>Live:</strong> ${escapeHtml(typeof taskLiveStatusText === 'function' ? taskLiveStatusText() : '—')}</div>
-      </div>
-      <div class="task-actions sync-actions">
-        <button class="primary" id="forceAutoSyncNow" type="button">Отправить / обновить</button>
-        <button class="ghost" data-action="recoverMissingLocalTasks" type="button">Восстановить и дожать</button>
-        <button class="ghost" id="hardRefreshApp" type="button">Обновить приложение</button>
-      </div>
-    </section>
-
-    ${renderSaveJournalCard(10)}
-
-    <details class="card technical-diagnostics">
-      <summary>Техническая диагностика</summary>
-      <div class="sync-diagnostics-grid diagnostic-mini">
-        <div><strong>email:</strong> ${syncDiagnostics.email ? escapeHtml(syncDiagnostics.email) : escapeHtml(settings.email || 'не указан')}</div>
-        <div><strong>user_id:</strong> ${syncDiagnostics.userId ? escapeHtml(syncDiagnostics.userId) : 'не определён'}</div>
-        <div><strong>активных задач в облаке:</strong> ${syncDiagnostics.remoteTasks === null ? 'не проверено' : syncDiagnostics.remoteTasks}</div>
-        <div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt || 'не было'}</div>
-        <div><strong>последняя выгрузка:</strong> ${syncDiagnostics.lastPushAt || 'не было'}</div>
-        <div><strong>последняя загрузка:</strong> ${syncDiagnostics.lastPullAt || 'не было'}</div>
-      </div>
-      ${renderSyncLab()}
-    </details>
-  </section>`;
+  const cfg = workspaceRead();
+  return `<section class="settings-panel clean-settings work-console-screen"><section class="card work-screen-head"><div><span class="view-kicker">синхронизация</span><h2>Сохранение и устройства</h2><p>Главное: задачи не теряются. Если что-то не ушло в облако, оно остаётся локально и видно в очереди.</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'подключено':'нужен вход'}</span></section>${renderSafeSyncStatusCard()}<section class="device-login-card card"><div class="device-login-head"><div><span class="view-kicker">устройство</span><h3>${signedIn?'Компьютер подключён':'Подключить устройство'}</h3><p>${signedIn?'Сессия активна. Задачи сохраняются локально и отправляются в облако.':'Введите email, получите код и войдите.'}</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'вход выполнен':'не подключено'}</span></div><div class="email-code-grid"><label>Email<input id="syncEmail" value="${escapeHtml(settings.email||'')}" placeholder="name@example.com" inputmode="email" autocomplete="email"/></label><label>Код из письма<input id="emailOtpCode" value="" placeholder="6 цифр" inputmode="numeric" autocomplete="one-time-code" maxlength="12"/></label></div><div class="task-actions sync-actions"><button class="primary" id="sendEmailCode" type="button">Получить код</button><button class="primary" id="verifyEmailCode" type="button">Войти</button>${signedIn?'<button class="ghost" id="logoutCloud" type="button">Выйти</button>':''}</div></section><section class="card work-summary-card"><div class="section-head compact-head"><div><span class="view-kicker">состояние</span><h3>Краткая сводка</h3></div></div><div class="work-metrics-grid"><div><strong>${activeTasks().length}</strong><span>активных задач</span></div><div><strong>${queue}</strong><span>не отправлено</span></div><div><strong>${safety}</strong><span>под защитой</span></div><div><strong>${Object.keys(tombstoneRead()).length}</strong><span>удалено локально</span></div></div><div class="task-actions sync-actions"><button class="primary" id="forceAutoSyncNow" type="button">Отправить / обновить</button><button class="ghost" data-action="recoverMissingLocalTasks" type="button">Восстановить и дожать</button><button class="ghost" id="hardRefreshApp" type="button">Обновить приложение</button></div></section>${renderWorkspaceSettingsCard()}${renderSaveJournalCard(8)}<details class="card technical-diagnostics" data-ui-detail="technicalDiagnostics" ${detailsOpenFlag('technicalDiagnostics')?'open':''}><summary>Техническая диагностика</summary><div class="sync-diagnostics-grid diagnostic-mini"><div><strong>email:</strong> ${syncDiagnostics.email?escapeHtml(syncDiagnostics.email):escapeHtml(settings.email||'не указан')}</div><div><strong>user_id:</strong> ${syncDiagnostics.userId?escapeHtml(syncDiagnostics.userId):'не определён'}</div><div><strong>активных задач:</strong> ${activeTasks().length}</div><div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt||'не было'}</div><div><strong>последняя ошибка:</strong> ${escapeHtml(lastAppErrorText()||syncDiagnostics.lastError||'нет')}</div><div><strong>Live:</strong> ${escapeHtml(typeof taskLiveStatusText==='function'?taskLiveStatusText():'—')}</div></div>${renderSyncLab()}</details></section>`;
 }
 function renderAbout() {
   return `<section class="settings-panel card about-page">
@@ -2734,9 +2604,10 @@ function addProjectDocFromForm() {
 function deleteProjectDoc(id) { projectDocs = projectDocs.map(d => d.id === id ? normalizeProjectDoc({ ...d, deletedAt: nowISO(), updatedAt: nowISO() }) : d); persistAll({ renderNow:true, sync:false }); }
 
 function userVisibleViews() {
-  const allowedForUser = ['commander','mobile','today','pmcontrol','tomorrow','week','templates','projects','kanban','inbox','stuck','delegate','noproject','promises','decisions','evening','searchall','timesheet','archive','settings','about'];
-  const base = Array.isArray(settings.visibleViews) && settings.visibleViews.length ? settings.visibleViews : defaultVisibleViews();
-  return settings.adminMode ? [...new Set([...base, 'admin'])] : base.filter(v => v !== 'admin' && allowedForUser.includes(v));
+  const cfg = workspaceRead();
+  const base = Array.isArray(cfg.visibleViews) && cfg.visibleViews.length ? cfg.visibleViews : workspaceDefaults().visibleViews;
+  const all = ['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings','searchall','today','tomorrow','week','stuck','delegate','noproject','promises','timesheet','archive','about'];
+  return all.filter(v => base.includes(v));
 }
 function applyVisibleViews() {
   const visible = userVisibleViews();
@@ -2746,6 +2617,7 @@ function applyVisibleViews() {
   });
 }
 function render() {
+  stripHardDeletedTasks('render');
   tasks = (tasks || []).map(normalizeTask).filter(t => !taskIsDeleted(t));
   document.body.dataset.currentView = currentView;
   renderProjectOptions();
@@ -2972,6 +2844,13 @@ function bindDynamicActions() {
     if (action === 'applyProcessTemplate') applyProcessTemplate(btn.dataset.template || '');
     if (action === 'startMorningPlan') startMorningPlan();
     if (action === 'startEveningReview') startEveningReview();
+    if (action === 'workspacePreset') setWorkspacePreset(btn.dataset.preset || 'leader');
+    if (action === 'toggleWorkspaceView') toggleWorkspaceView(btn.dataset.viewId || '');
+    if (action === 'toggleWorkspaceDiagnostics') toggleWorkspaceDiagnostics();
+    if (action === 'createProjectFromConsole') createProjectFromConsole();
+    if (action === 'saveProjectName') saveProjectName(btn.dataset.projectId || '');
+    if (action === 'archiveProject') archiveProject(btn.dataset.projectId || '');
+    if (action === 'deleteProjectOnly') deleteProjectOnly(btn.dataset.projectId || '');
     if (action === 'clearQuickProject') { selectedQuickProjectId = ''; renderQuickTagBars(); }
     if (action === 'setKanbanMode') { settings.kanbanMode = btn.dataset.mode || 'compact'; saveSettings({ renderNow:false }); render(); }
     if (action === 'donePromise') donePromise(id);
@@ -3570,6 +3449,27 @@ function syncEngineRowToTask(row) {
   return rowToTask(row);
 }
 
+
+async function syncEngineUpsertDeletedTask(task, { silent = true, reason = 'удаление задачи' } = {}) {
+  try {
+    const pair = await syncEngineGetUser({ silent:true });
+    if (!pair) return false;
+    const { client, user } = pair;
+    const row = cloudSafeTaskPayload(task, user.id);
+    row.deleted_at = row.deleted_at || task.deletedAt || syncEngineNow();
+    row.updated_at = row.updated_at || row.deleted_at;
+    const { data, error } = await client.from('tasks').upsert(row, { onConflict:'id' }).select('id,deleted_at,updated_at,title').maybeSingle();
+    if (error) throw error;
+    tombstoneAdd(task.id, 'cloud-delete-sent');
+    addSyncAudit('удаление отправлено', data?.title || task.title || task.id);
+    return true;
+  } catch (e) {
+    recordAppError('delete cloud write', e?.message || String(e));
+    setSyncState('удаление сохранено локально · облако позже', 'warn');
+    return false;
+  }
+}
+
 async function syncEngineUpsertTask(taskId, { silent = true, reason = 'изменение задачи' } = {}) {
   return stableSyncRunQueued(async () => {
     const pair = await syncEngineGetUser({ silent });
@@ -3681,59 +3581,33 @@ function syncEngineApplyCloudTasks(cloudTasks = []) {
   const normalizedCloud = (cloudTasks || []).map(normalizeTask).filter(t => t.id);
   const cloudById = new Map(normalizedCloud.map(t => [t.id, t]));
   const cloudDeletedIds = new Set(normalizedCloud.filter(taskIsDeleted).map(t => t.id));
-
   const nextById = new Map();
-
-  // Active cloud rows are accepted.
   normalizedCloud.forEach(cloudTask => {
-    if (taskIsDeleted(cloudTask)) {
-      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(cloudTask.id);
-      if (typeof reliableQueueRemove === 'function') reliableQueueRemove(cloudTask.id);
-      safetyMarkDeleted(cloudTask.id);
+    if (taskIsDeleted(cloudTask) || tombstoneHas(cloudTask.id)) {
+      tombstoneAdd(cloudTask.id, 'cloud-deleted');
       return;
     }
     nextById.set(cloudTask.id, cloudTask);
     safetyMarkSynced(cloudTask.id);
   });
-
-  // Restore safety ledger before deciding local state.
   safetyRecoverLocalTasksFromBackup({ queue:true, renderNow:false });
-
-  // Local unsent active tasks are protected. Cloud pull cannot erase them.
   (tasks || []).map(normalizeTask).forEach(local => {
-    if (!local.id || taskIsDeleted(local)) return;
-
-    if (cloudDeletedIds.has(local.id)) {
-      if (typeof dirtyTaskIds !== 'undefined') dirtyTaskIds.delete(local.id);
-      if (typeof reliableQueueRemove === 'function') reliableQueueRemove(local.id);
-      safetyMarkDeleted(local.id);
-      return;
-    }
-
+    if (!local.id || taskIsDeleted(local) || tombstoneHas(local.id)) return;
+    if (cloudDeletedIds.has(local.id)) { tombstoneAdd(local.id, 'cloud-deleted'); return; }
     const queued = typeof reliableQueueRead === 'function' && reliableQueueRead().includes(local.id);
     const dirty = typeof dirtyTaskIds !== 'undefined' && dirtyTaskIds.has(local.id);
     const safetyPending = safetyPendingRecords().some(r => r.id === local.id);
     const existsInCloud = cloudById.has(local.id);
-
     if (!existsInCloud || queued || dirty || safetyPending) {
       nextById.set(local.id, local);
-      if (!existsInCloud) {
-        reliableQueueAdd(local.id);
-        safetyRecordTask(local, 'pending');
-      }
+      if (!existsInCloud) { reliableQueueAdd(local.id); safetyRecordTask(local, 'pending'); }
     }
   });
-
   if (typeof saveDirtyTaskIds === 'function') saveDirtyTaskIds();
-
-  tasks = [...nextById.values()].map(normalizeTask).filter(t => !taskIsDeleted(t)).sort((a, b) =>
-    String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
-  );
-
+  tasks = [...nextById.values()].map(normalizeTask).filter(t => !taskIsDeleted(t) && !tombstoneHas(t.id)).sort((a,b)=>String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||'')));
   persistAll({ renderNow:false, sync:false });
-
   const activeCount = tasks.length;
-  const deletedCount = cloudDeletedIds.size;
+  const deletedCount = cloudDeletedIds.size + Object.keys(tombstoneRead()).length;
   const inboxCount = tasks.filter(t => (t.status || 'inbox') === 'inbox').length;
   syncDiagnostics.localTasks = activeCount;
   syncDiagnostics.remoteTasks = activeCount;
@@ -3870,14 +3744,20 @@ function safetyMarkDeleted(id) {
 }
 function safetyPendingRecords() {
   const ledger = safetyReadLedger();
-  return Object.values(ledger).filter(r => r && r.task && r.state !== 'synced' && r.state !== 'deleted' && !taskIsDeleted(r.task));
+  return Object.values(ledger).filter(r =>
+    r && r.task &&
+    r.state !== 'synced' &&
+    r.state !== 'deleted' &&
+    !taskIsDeleted(r.task) &&
+    !tombstoneHas(r.id || r.task.id)
+  );
 }
 function safetyRecoverLocalTasksFromBackup({ queue = true, renderNow = false } = {}) {
   const before = new Set((tasks || []).map(t => normalizeTask(t).id));
   let restored = 0;
   safetyPendingRecords().forEach(r => {
     const t = normalizeTask(r.task);
-    if (!t.id || taskIsDeleted(t)) return;
+    if (!t.id || taskIsDeleted(t) || tombstoneHas(t.id)) return;
     if (!before.has(t.id)) {
       tasks.unshift(t);
       before.add(t.id);
@@ -4068,6 +3948,7 @@ function taskLiveAutoOpenForNewTasks(newIds = []) {
 
 function taskLiveApplyRow(row, reason = 'realtime') {
   if (!row?.id) return;
+  if (tombstoneHas(row.id) && !taskIsDeleted(row)) return;
   const beforeIds = new Set(activeTasks().map(t => t.id));
   const incoming = normalizeTask(rowToTask(row));
 
@@ -4709,6 +4590,12 @@ function boot() {
   if ($('editForm')) $('editForm').onsubmit = saveEdit;
   if ($('closeDialogBtn')) $('closeDialogBtn').onclick = () => $('taskDialog').close();
   if ($('deleteTaskBtn')) $('deleteTaskBtn').onclick = () => { const id = $('editId').value; deleteTask(id); $('taskDialog').close(); };
+
+  
+  document.addEventListener('toggle', (e) => {
+    const key = e.target?.dataset?.uiDetail;
+    if (key) setDetailsOpenFlag(key, e.target.open);
+  }, true);
 
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
