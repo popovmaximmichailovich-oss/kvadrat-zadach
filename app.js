@@ -1,4 +1,4 @@
-const APP_VERSION = '3.0.2';
+const APP_VERSION = '3.1.0';
 const STORAGE_KEY = 'eisenhower_tasks_v1';
 const WORKLOGS_KEY = 'eisenhower_worklogs_v1';
 const PROJECTS_KEY = 'eisenhower_projects_v1';
@@ -9,6 +9,8 @@ const TEMPLATES_KEY = 'eisenhower_templates_v1';
 const DOCS_KEY = 'eisenhower_project_docs_v1';
 const ADMIN_USERS_KEY = 'eisenhower_admin_users_v1';
 const SETTINGS_KEY = 'eisenhower_tasks_settings_v1';
+const TAGS_KEY = 'kvadrat_tags_v1';
+const OPERATIONS_KEY = 'kvadrat_operations_v1';
 const DIRTY_TASKS_KEY = 'kvadrat_zadach_dirty_tasks_v1';
 const APP_ERROR_LOG_KEY = 'kvadrat_zadach_app_errors_v1';
 const OTP_LAST_REQUEST_KEY = 'kvadrat_zadach_otp_last_request_at';
@@ -33,6 +35,7 @@ let decisions = loadDecisions();
 let taskTemplates = loadTaskTemplates();
 let projectDocs = loadProjectDocs();
 let adminUsers = loadAdminUsers();
+let tags = loadTags();
 let tasks = loadTasks();
 let workLogs = loadWorkLogs();
 let currentView = 'commander';
@@ -51,6 +54,9 @@ let lastSyncStartedAt = 0;
 let supabaseClientInstance = null;
 let supabaseClientKey = '';
 let selectedQuickProjectId = '';
+let selectedQuickTagIds = [];
+let currentTaskFilter = { status:'all', projectId:'all', tagId:'all', query:'' };
+let selectedProjectDetailId = '';
 let syncState = { text: 'синхронизация не запускалась', tone: 'idle' };
 let syncDiagnostics = { userId: '', email: '', localTasks: 0, remoteTasks: null, remoteProjects: null, lastError: '', lastCheckedAt: '', lastPushAt: '', lastPullAt: '', lastLocalTask: '', lastCloudTask: '', lastCloudTaskAt: '' };
 
@@ -256,13 +262,13 @@ function loadAdminUsers() { return loadArray(ADMIN_USERS_KEY); }
 function loadWorkLogs() { return loadArray(WORKLOGS_KEY); }
 
 function defaultVisibleViews() {
-  return ['commander','mobile','inbox','projects','kanban','searchall','settings','today','pmcontrol','tomorrow','week','templates','evening','stuck','delegate','noproject','promises','decisions','timesheet','archive','about'];
+  return ['commander','alltasks','inbox','projects','kanban','mobile','settings','searchall','tags','today','tomorrow','week','pmcontrol','decisions','archive','about'];
 }
 function defaultDashboardWidgets() {
   return ['health','timeline','alerts','progress','workload','documents','calendar','team'];
 }
 const viewLabels = {
-  commander:'День', mobile:'Пульт', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны процессов', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхронизация', admin:'Панель администратора', about:'О приложении'
+  commander:'День', alltasks:'Все задачи', projectdetail:'Проект', tags:'Теги', mobile:'Пульт', today:'Сегодня', tomorrow:'Завтра', week:'Неделя', pmcontrol:'Управление', dashboard:'Дашборд', report:'Отчёт недели', inbox:'Разбор', stuck:'Зависло', delegate:'Делегировать', noproject:'Без проекта', matrix:'Эйзенхауэр', kanban:'Канбан', projects:'Проекты', promises:'Обещания', decisions:'Решения', templates:'Шаблоны процессов', evening:'Вечер', searchall:'Поиск', timesheet:'Табель', archive:'Архив', settings:'Синхронизация', admin:'Панель администратора', about:'О приложении'
 };
 const widgetLabels = {
   health:'Здоровье проектов', timeline:'Сроки / Гант', alerts:'Маркеры риска', progress:'Динамика выполнения', workload:'Загрузка', documents:'Документы', calendar:'Календарь iPhone', team:'3 пользователя'
@@ -395,7 +401,8 @@ function normalizeTaskTemplate(t) {
     note: t.note || '',
     createdAt: t.createdAt || t.created_at || nowISO(),
     updatedAt: t.updatedAt || t.updated_at || nowISO(),
-    deletedAt: t.deletedAt || t.deleted_at || null
+    deletedAt: t.deletedAt || t.deleted_at || null,
+    tags: Array.isArray(t.tags) ? [...new Set(t.tags.filter(Boolean))] : Array.isArray(t.tagIds) ? [...new Set(t.tagIds.filter(Boolean))] : []
   };
 }
 function normalizeProjectDoc(d) {
@@ -447,7 +454,8 @@ function normalizeTask(t) {
     updatedAt: t.updatedAt || t.updated_at || nowISO(),
     doneAt: t.doneAt || t.done_at || null,
     archivedAt: t.archivedAt || t.archived_at || null,
-    deletedAt: t.deletedAt || t.deleted_at || null
+    deletedAt: t.deletedAt || t.deleted_at || null,
+    tags: Array.isArray(t.tags) ? [...new Set(t.tags.filter(Boolean))] : Array.isArray(t.tagIds) ? [...new Set(t.tagIds.filter(Boolean))] : []
   };
 }
 function normalizeWorkLog(l) {
@@ -618,23 +626,19 @@ function sortTasks(list) {
   });
 }
 function updateTask(id, patch) {
-  tasks = tasks.map(t => t.id === id ? normalizeTask({ ...t, ...patch, updatedAt: syncEngineNow() }) : t);
-  const updatedTask = tasks.find(t => t.id === id);
-  if (updatedTask) { safetyRecordTask(updatedTask, patch.deletedAt ? 'deleted' : 'pending'); saveJournalAdd('updated-local', patch.deletedAt ? 'Удаление поставлено в очередь' : 'Изменение сохранено локально', updatedTask); }
-  markTaskDirty(id);
-  reliableQueueAdd(id);
-  persistAll({ renderNow:true, sync:false });
-  syncEngineUpsertTask(id, { silent:true, reason: patch.deletedAt ? 'удаление задачи' : 'изменение задачи' });
-  reliableFlushWriteQueue({ silent:true, reason:'after update' });
+  TaskService.update(id, patch, { reason: patch.deletedAt ? 'delete_task' : 'update_task' });
 }
 function addTask() {
   const raw = $('quickTitle')?.value.trim() || '';
   if (!raw) return;
   const advancedOpen = Boolean($('advancedDetails')?.open);
-  const isQuickInbox = !advancedOpen;
   const smart = advancedOpen ? {} : analyzeSmartCaptureText(raw);
   const projectId = advancedOpen ? projectValueFromInput($('fieldProject').value) : (smart.projectId || selectedQuickProjectId || '');
-  const t = normalizeTask({
+  const tagIds = advancedOpen
+    ? parseTagInput($('fieldTags')?.value || '').map(name => ensureTag(name)).filter(Boolean)
+    : [...new Set([...(smart.tagIds || []), ...selectedQuickTagIds])];
+
+  const t = TaskService.create({
     title: advancedOpen ? raw : (smart.cleanTitle || raw),
     projectId,
     project: projectName(projectId, ''),
@@ -645,49 +649,23 @@ function addTask() {
     importance: advancedOpen ? $('fieldImportance').value : (smart.importance || 'low'),
     urgency: advancedOpen ? $('fieldUrgency').value : (smart.urgency || 'low'),
     dayBucket: advancedOpen ? $('fieldDayBucket').value : 'none',
-    note: advancedOpen ? $('fieldNote').value : (smart.note || '')
+    note: advancedOpen ? $('fieldNote').value : (smart.note || ''),
+    tags: tagIds
   });
-
-  tasks.unshift(t);
-  safetyRecordTask(t, 'pending');
-  reliableQueueAdd(t.id);
-  markTaskDirty(t.id);
-  saveJournalAdd('saved-local', 'Задача сохранена локально и поставлена в очередь', t);
 
   if ($('quickTitle')) $('quickTitle').value = '';
   if ($('fieldNote')) $('fieldNote').value = '';
-
-  if (isQuickInbox) {
-    if ($('searchInput')) $('searchInput').value = '';
-    if ($('projectFilter')) $('projectFilter').value = 'all';
-    currentView = 'inbox';
-  }
-
-  persistAll({ renderNow:true, sync:false });
-  syncDiagnostics.localTasks = activeTasks().length;
-  syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  syncDiagnostics.lastError = '';
+  if ($('fieldTags')) $('fieldTags').value = '';
+  selectedQuickTagIds = [];
+  if ($('searchInput')) $('searchInput').value = '';
+  if ($('projectFilter')) $('projectFilter').value = 'all';
+  currentView = 'inbox';
   setSyncState('задача сохранена локально · отправляется', 'warn');
-  syncEngineUpsertTask(t.id, { silent:true, reason:'создание задачи' });
-  reliableFlushWriteQueue({ silent:true, reason:'after smart capture' });
+  render();
 }
 
 function deleteTask(id) {
-  const task = tasks.find(t => normalizeTask(t).id === id);
-  const deletedAt = syncEngineNow();
-  tombstoneAdd(id, 'user-delete');
-  const deletedPayload = normalizeTask({ ...(task || { id, title:'Удалённая задача' }), id, deletedAt, updatedAt: deletedAt });
-  safetyRecordTask(deletedPayload, 'deleted');
-  tasks = (tasks || []).map(normalizeTask).filter(t => t.id !== id);
-  persistAll({ renderNow:false, sync:false });
-  syncDiagnostics.localTasks = activeTasks().length;
-  syncDiagnostics.lastLocalTask = latestLocalTaskTitle();
-  setSyncState('задача удалена', 'ok');
-  saveJournalAdd('deleted-local', 'Удаление сохранено', deletedPayload);
-  addSyncAudit('удаление задачи', task ? `удалена: ${task.title}` : id);
-  // Direct cloud write for deletion. Do not keep deleted row in the working task list.
-  syncEngineUpsertDeletedTask(deletedPayload, { silent:true, reason:'удаление задачи' });
-  render();
+  TaskService.delete(id);
 }
 function completeTask(id) { updateTask(id, { status: 'done', doneAt: nowISO(), dayBucket: 'none' }); }
 function restoreTask(id) { updateTask(id, { status: 'planned', doneAt: null, archivedAt: null }); }
@@ -770,12 +748,35 @@ function taskCard(t) {
   const statusText = statusLabels[t.status] || t.status;
   const priorityText = priorityLabels[t.priority] || t.priority;
   const queued = typeof reliableQueueRead === 'function' && reliableQueueRead().includes(t.id);
-  const mainAction = t.status !== 'done' ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>` : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
+  const mainAction = t.status !== 'done'
+    ? `<button class="mini-btn primary-mini" data-action="done" data-id="${t.id}" type="button">Готово</button>`
+    : `<button class="mini-btn" data-action="restore" data-id="${t.id}" type="button">Вернуть</button>`;
   return `<article class="task-card ux-card ux-task-card work-task-card ${taskToneClass(t)} ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
-    <div class="work-task-main"><div class="work-task-title"><span class="task-state-dot ux-dot"></span><div><p class="task-title ux-card-title">${escapeHtml(t.title)}</p><small>${cfg.cardFields.project ? escapeHtml(pName) : ''}${queued && cfg.cardFields.sync ? ' · не отправлено' : ''}</small></div></div>
-    <div class="work-task-meta">${cfg.cardFields.status ? `<span class="ux-status ${queued ? 'ux-status-danger' : overdue ? 'ux-status-danger' : t.status === 'doing' ? 'ux-status-work' : ''}">${queued ? 'не отправлено' : escapeHtml(statusText)}</span>` : ''}${cfg.cardFields.priority ? `<span class="badge priority-${t.priority}">${escapeHtml(priorityText)}</span>` : ''}${cfg.cardFields.dates && t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок ${dateLabel(t.dueDate)}</span>` : ''}${cfg.cardFields.dates && t.planDate ? `<span class="badge">делать ${dateLabel(t.planDate)}</span>` : ''}</div></div>
+    <div class="work-task-main">
+      <div class="work-task-title"><span class="task-state-dot ux-dot"></span><div>
+        <p class="task-title ux-card-title">${escapeHtml(t.title)}</p>
+        <small>${cfg.cardFields.project && t.projectId ? `<button class="inline-link" data-action="openProjectDetail" data-project-id="${t.projectId}" type="button">${escapeHtml(pName)}</button>` : escapeHtml(pName)}${queued && cfg.cardFields.sync ? ' · не отправлено' : ''}</small>
+      </div></div>
+      <div class="work-task-meta">
+        ${cfg.cardFields.status ? `<span class="ux-status ${queued ? 'ux-status-danger' : overdue ? 'ux-status-danger' : t.status === 'doing' ? 'ux-status-work' : ''}">${queued ? 'не отправлено' : escapeHtml(statusText)}</span>` : ''}
+        ${cfg.cardFields.priority ? `<span class="badge priority-${t.priority}">${escapeHtml(priorityText)}</span>` : ''}
+        ${cfg.cardFields.dates && t.dueDate ? `<span class="badge ${overdue ? 'overdue' : ''}">срок ${dateLabel(t.dueDate)}</span>` : ''}
+        ${cfg.cardFields.dates && t.planDate ? `<span class="badge">делать ${dateLabel(t.planDate)}</span>` : ''}
+      </div>
+    </div>
+    ${renderTagChips(t, { editable:false })}
     ${cfg.cardFields.note && t.note ? `<p class="task-note ux-card-note">${escapeHtml(t.note)}</p>` : ''}
-    <div class="task-actions task-actions-compact ux-card-actions clean-card-actions">${mainAction}<button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button><button class="mini-btn danger-mini" data-action="deleteTaskQuick" data-id="${t.id}" type="button">Удалить</button><details class="task-more-actions"><summary>⋯</summary><div class="task-more-menu">${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}${t.planDate !== today() && t.status !== 'done' ? `<button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>` : ''}${t.projectId ? `<button class="mini-btn ghost-mini" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}</div></details></div>
+    <div class="task-actions task-actions-compact ux-card-actions clean-card-actions">
+      ${mainAction}
+      <button class="mini-btn" data-action="edit" data-id="${t.id}" type="button">Открыть</button>
+      <button class="mini-btn" data-action="quickAddTagToTask" data-id="${t.id}" type="button">+ тег</button>
+      <button class="mini-btn danger-mini" data-action="deleteTaskQuick" data-id="${t.id}" type="button">Удалить</button>
+      <details class="task-more-actions"><summary>⋯</summary><div class="task-more-menu">
+        ${t.status !== 'doing' && t.status !== 'done' ? `<button class="mini-btn" data-action="doing" data-id="${t.id}" type="button">В работу</button>` : ''}
+        ${t.planDate !== today() && t.status !== 'done' ? `<button class="mini-btn" data-action="today" data-id="${t.id}" type="button">Сегодня</button>` : ''}
+        ${t.projectId ? `<button class="mini-btn ghost-mini" data-action="logTaskProject" data-id="${t.id}" type="button">Работал</button>` : ''}
+      </div></details>
+    </div>
   </article>`;
 }
 function listHtml(list, emptyText = 'Задач нет') {
@@ -803,19 +804,15 @@ function renderStats() {
 }
 function renderQuickTagBars() {
   const focused = document.activeElement;
-  // iPhone fix: do not rebuild the tag input while the user is typing.
   if (focused && (focused.id === 'quickTagName' || focused.closest?.('.quick-tag-add'))) return;
-
-  const chipHtml = favoriteProjects().map(name => {
-    const id = ensureProject(name, { persist: false });
-    const active = selectedQuickProjectId && selectedQuickProjectId === id ? ' active' : '';
-    return `<button class="tag-chip${active}" data-quick-project="${escapeHtml(name)}" data-project-id="${escapeHtml(id)}" type="button">#${escapeHtml(name)}</button>`;
+  const chipHtml = activeTags().slice(0, 10).map(tag => {
+    const active = selectedQuickTagIds.includes(tag.id) ? ' active' : '';
+    return `<button class="tag-chip${active}" data-quick-tag="${escapeHtml(tag.id)}" type="button" style="--tag-color:${escapeHtml(tag.color)}">#${escapeHtml(tag.name)}</button>`;
   }).join('');
-  const clearBtn = selectedQuickProjectId ? `<button class="tag-chip tag-chip--clear" data-action="clearQuickProject" type="button">Без тега</button>` : '';
-  const addForm = `<span class="quick-tag-add"><input id="quickTagName" placeholder="Новый тег / проект" inputmode="text" autocomplete="off" autocapitalize="sentences" /><button class="mini-btn" id="addQuickTagBtn" type="button">+ тег</button></span>`;
-  const addHint = `<span class="tag-hint">Выбери тег перед быстрым вводом — задача сразу получит проект.</span>`;
-  if ($('quickTagBar')) $('quickTagBar').innerHTML = chipHtml + clearBtn + addForm + addHint;
-  if ($('editTagBar')) $('editTagBar').innerHTML = chipHtml;
+  const clearBtn = selectedQuickTagIds.length ? `<button class="tag-chip tag-chip--clear" data-action="clearQuickTags" type="button">Без тегов</button>` : '';
+  const addForm = `<span class="quick-tag-add"><input id="quickTagName" placeholder="Новый тег" inputmode="text" autocomplete="off" autocapitalize="sentences" /><button class="mini-btn" id="addQuickTagBtn" type="button">+ тег</button></span>`;
+  if ($('quickTagBar')) $('quickTagBar').innerHTML = chipHtml + clearBtn + addForm;
+  if ($('editTagBar')) $('editTagBar').innerHTML = activeTags().map(tag => `<button class="tag-chip" data-edit-tag="${escapeHtml(tag.id)}" type="button" style="--tag-color:${escapeHtml(tag.color)}">#${escapeHtml(tag.name)}</button>`).join('');
 }
 function renderProjectOptions() {
   const list = activeProjects();
@@ -826,26 +823,145 @@ function renderProjectOptions() {
   renderQuickTagBars();
 }
 function applyQuickProject(name, target='quick') {
-  const projectId = ensureProject(name);
-  const value = projectName(projectId);
+  // Legacy handler kept for old markup. v3.1 uses quick tags, not quick projects.
+  const tagId = ensureTag(name);
   if (target === 'edit') {
-    $('editProject').value = value;
-  } else {
-    selectedQuickProjectId = projectId;
-    if ($('fieldProject')) $('fieldProject').value = value;
+    const input = $('editTags');
+    if (input) {
+      const current = parseTagInput(input.value);
+      const label = tagName(tagId);
+      if (label && !current.includes(label)) input.value = [...current, label].join(', ');
+    }
+  } else if (tagId) {
+    selectedQuickTagIds = selectedQuickTagIds.includes(tagId) ? selectedQuickTagIds.filter(id => id !== tagId) : [...selectedQuickTagIds, tagId];
     renderQuickTagBars();
   }
 }
 function createQuickTagFromInput() {
   const input = document.activeElement?.id === 'quickTagName' ? document.activeElement : $('quickTagName');
   const name = input?.value.trim();
-  if (!name) return alert('Укажи название тега / проекта.');
-  const projectId = ensureProject(name);
-  selectedQuickProjectId = projectId;
-  if (!favoriteProjects().includes(name)) settings.quickProjects = [...favoriteProjects(), name];
+  if (!name) return alert('Укажи название тега.');
+  const tagId = ensureTag(name);
+  if (!selectedQuickTagIds.includes(tagId)) selectedQuickTagIds.push(tagId);
   if (input) input.value = '';
-  persistAll({ renderNow: true, sync: false });
+  saveTags({ renderNow:false });
+  renderQuickTagBars();
 }
+
+function filteredAllTasks() {
+  let list = activeTasks();
+  const status = $('allTaskStatus')?.value || currentTaskFilter.status || 'all';
+  const projectId = $('allTaskProject')?.value || currentTaskFilter.projectId || 'all';
+  const tagId = $('allTaskTag')?.value || currentTaskFilter.tagId || 'all';
+  const q = $('allTaskSearch')?.value.trim().toLowerCase() || currentTaskFilter.query || '';
+  currentTaskFilter = { status, projectId, tagId, query:q };
+  if (status === 'active') list = list.filter(t => t.status !== 'done');
+  else if (status === 'overdue') list = list.filter(isOverdue);
+  else if (status === 'unsent') list = list.filter(t => reliableQueueRead().includes(t.id));
+  else if (status === 'done') list = list.filter(t => t.status === 'done');
+  else if (status !== 'all') list = list.filter(t => t.status === status);
+  if (projectId !== 'all') list = projectId === 'none' ? list.filter(t => !t.projectId) : list.filter(t => t.projectId === projectId);
+  if (tagId !== 'all') list = list.filter(t => taskTagIds(t).includes(tagId));
+  if (q) list = list.filter(t => [t.title, t.note, projectName(t.projectId,t.project), ...taskTagLabels(t)].join(' ').toLowerCase().includes(q));
+  return list;
+}
+function renderAllTasks() {
+  const projectsOptions = activeProjects().map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  const tagsOptions = activeTags().map(t => `<option value="${t.id}">#${escapeHtml(t.name)}</option>`).join('');
+  const list = filteredAllTasks();
+  return `<section class="section-head work-page-head"><div><span class="view-kicker">задачи</span><h2>Все задачи</h2><p>Единый список: активные, просроченные, без проекта, по тегам и по статусу.</p></div></section>
+  <section class="card all-tasks-toolbar">
+    <input id="allTaskSearch" placeholder="Поиск по задачам" value="${escapeHtml(currentTaskFilter.query || '')}" />
+    <select id="allTaskStatus">
+      <option value="all">Все статусы</option><option value="active">Активные</option><option value="inbox">Разбор</option><option value="planned">Запланировано</option><option value="doing">В работе</option><option value="waiting">Жду</option><option value="overdue">Просрочено</option><option value="unsent">Не отправлено</option><option value="done">Выполнено</option>
+    </select>
+    <select id="allTaskProject"><option value="all">Все проекты</option><option value="none">Без проекта</option>${projectsOptions}</select>
+    <select id="allTaskTag"><option value="all">Все теги</option>${tagsOptions}</select>
+  </section>
+  <section class="card"><div class="section-head compact-head"><div><h3>${list.length} задач</h3></div></div>${listHtml(list, 'Нет задач по выбранному фильтру')}</section>`;
+}
+function renderTags() {
+  return `<section class="section-head work-page-head"><div><span class="view-kicker">теги</span><h2>Теги</h2><p>Создавайте теги, назначайте их задачам и фильтруйте список.</p></div></section>
+  <section class="card tag-console">
+    <div class="tag-create-row">
+      <input id="newTagName" placeholder="Новый тег" autocomplete="off" />
+      <input id="newTagColor" type="color" value="#2563FF" />
+      <button class="primary compact-primary" data-action="createTagFromConsole" type="button">Создать тег</button>
+    </div>
+    <div class="tag-console-list">${activeTags().map(renderTagConsoleRow).join('') || '<div class="empty">Тегов пока нет</div>'}</div>
+  </section>`;
+}
+function renderTagConsoleRow(tag) {
+  const count = activeTasks().filter(t => taskTagIds(t).includes(tag.id)).length;
+  return `<article class="tag-console-row" data-tag-id="${tag.id}">
+    <span class="tag-color-dot" style="background:${escapeHtml(tag.color)}"></span>
+    <input class="tag-name-input" value="${escapeHtml(tag.name)}" data-tag-id="${tag.id}" />
+    <input class="tag-color-input" type="color" value="${escapeHtml(tag.color)}" data-tag-id="${tag.id}" />
+    <span class="tag-count">${count} задач</span>
+    <button class="mini-btn" data-action="saveTagName" data-tag-id="${tag.id}" type="button">Сохранить</button>
+    <button class="mini-btn" data-action="filterByTag" data-tag-id="${tag.id}" type="button">Показать задачи</button>
+    <button class="mini-btn danger-mini" data-action="deleteTagOnly" data-tag-id="${tag.id}" type="button">Удалить</button>
+  </article>`;
+}
+function createTagFromConsole() {
+  const name = $('newTagName')?.value.trim();
+  const color = $('newTagColor')?.value || '#2563FF';
+  if (!name) return alert('Укажите название тега.');
+  ensureTag(name, color);
+  if ($('newTagName')) $('newTagName').value = '';
+  render();
+}
+function saveTagName(id) {
+  const name = document.querySelector(`.tag-name-input[data-tag-id="${CSS.escape(id)}"]`)?.value.trim();
+  const color = document.querySelector(`.tag-color-input[data-tag-id="${CSS.escape(id)}"]`)?.value || '#2563FF';
+  if (!name) return alert('Название тега не должно быть пустым.');
+  tags = tags.map(t => t.id === id ? normalizeTag({ ...t, name, color, updatedAt: nowISO() }) : t);
+  saveTags({ renderNow:false });
+  operationAdd('update_tag','tag',id,tags.find(t=>t.id===id));
+  render();
+}
+function deleteTagOnly(id) {
+  const tag = tagById(id);
+  if (!tag) return;
+  const count = activeTasks().filter(t => taskTagIds(t).includes(id)).length;
+  if (!confirm(`Удалить тег #${tag.name}? Он будет снят с ${count} задач.`)) return;
+  tags = tags.map(t => t.id === id ? normalizeTag({ ...t, deletedAt: nowISO(), updatedAt: nowISO() }) : t);
+  tasks = tasks.map(t => taskTagIds(t).includes(id) ? normalizeTask({ ...t, tags: taskTagIds(t).filter(x => x !== id), updatedAt: nowISO() }) : t);
+  saveTags({ renderNow:false });
+  persistAll({ renderNow:false, sync:false });
+  operationAdd('delete_tag','tag',id,tag);
+  render();
+}
+function filterByTag(id) {
+  currentTaskFilter = { status:'all', projectId:'all', tagId:id, query:'' };
+  NavigationService.open('alltasks');
+}
+function quickAddTagToTask(id) {
+  const name = prompt('Введите тег для задачи');
+  if (!name) return;
+  addTagToTask(id, name);
+}
+function openProjectDetail(id) {
+  selectedProjectDetailId = id;
+  NavigationService.open('projectdetail', { projectId:id });
+}
+function renderProjectDetail() {
+  const p = projectById(selectedProjectDetailId) || activeProjects()[0];
+  if (!p) return `<section class="section-head"><div><h2>Проект</h2><p>Проект не выбран.</p></div></section>`;
+  selectedProjectDetailId = p.id;
+  const h = projectHealth(p.id);
+  const all = activeTasks().filter(t => t.projectId === p.id);
+  const critical = all.filter(t => isOverdue(t) || t.priority === 'A');
+  const active = all.filter(t => t.status !== 'done');
+  const done = all.filter(t => t.status === 'done');
+  return `<section class="section-head project-detail-head"><div><button class="ghost compact-primary" data-action="openProjectsQuick" type="button">← Проекты</button><span class="view-kicker">проект</span><h2>${escapeHtml(p.name)}</h2><p>${projectStatusLabels[p.status] || p.status} · ${active.length} активных · ${h.overdue} просрочено</p></div></section>
+  <section class="card project-passport-premium">
+    <div class="health-score-block"><span>Здоровье проекта</span><strong>${h.score}</strong><em>/100</em><p>${h.tone === 'ok' ? 'Стабильно' : h.tone === 'warn' ? 'Требует внимания' : 'Критично'}</p><div class="health-line"><i style="width:${h.score}%"></i></div></div>
+    <div class="project-metric-grid"><div><b>${active.length}</b><span>активных</span></div><div><b>${h.overdue}</b><span>просрочено</span></div><div><b>${h.soon}</b><span>скоро срок</span></div><div><b>${done.length}</b><span>закрыто</span></div></div>
+  </section>
+  <section class="card"><div class="segmented-tabs"><button class="active">Критично (${critical.length})</button><button>Все (${all.length})</button><button>Активные (${active.length})</button><button>Готово (${done.length})</button></div>${listHtml(critical.length ? critical : active, 'Задач по проекту нет')}</section>`;
+}
+
 function renderToday() {
   const d = currentView === 'tomorrow' ? addDays(1) : today();
   const title = currentView === 'tomorrow' ? 'Завтра' : 'Сегодня';
@@ -1192,6 +1308,208 @@ function projectHealth(projectId) {
 }
 
 
+
+/* ==============================
+   v3.1.0 Architecture Reset
+   Services: tasks, projects, tags, operations, navigation, sync.
+   UI calls services; deleted tasks never return.
+   ============================== */
+
+function loadTags() { return loadArray(TAGS_KEY); }
+function loadOperations() { return loadArray(OPERATIONS_KEY); }
+function saveTags({ renderNow = false } = {}) {
+  localStorage.setItem(TAGS_KEY, JSON.stringify(tags.map(normalizeTag)));
+  if (renderNow) render();
+}
+function saveOperations() {
+  localStorage.setItem(OPERATIONS_KEY, JSON.stringify(operationQueue().map(normalizeOperation)));
+}
+function normalizeTag(tag) {
+  return {
+    id: tag.id || uid(),
+    name: String(tag.name || tag.title || '').trim() || 'Без названия',
+    color: tag.color || '#2563FF',
+    orderIndex: Number.isFinite(Number(tag.orderIndex ?? tag.order_index)) ? Number(tag.orderIndex ?? tag.order_index) : Date.now(),
+    createdAt: tag.createdAt || tag.created_at || nowISO(),
+    updatedAt: tag.updatedAt || tag.updated_at || nowISO(),
+    deletedAt: tag.deletedAt || tag.deleted_at || null
+  };
+}
+function normalizeOperation(op) {
+  return {
+    id: op.id || uid(),
+    type: op.type || 'update_task',
+    entity: op.entity || 'task',
+    entityId: op.entityId || op.entity_id || '',
+    payload: op.payload || null,
+    status: op.status || 'pending',
+    attempts: Number(op.attempts || 0),
+    createdAt: op.createdAt || op.created_at || nowISO(),
+    updatedAt: op.updatedAt || op.updated_at || nowISO(),
+    lastError: op.lastError || op.last_error || ''
+  };
+}
+function operationQueue() { return loadOperations(); }
+function operationAdd(type, entity, entityId, payload = null) {
+  const q = operationQueue().map(normalizeOperation).filter(op => !(op.entity === entity && op.entityId === entityId && op.type === type && op.status === 'pending'));
+  q.push(normalizeOperation({ type, entity, entityId, payload, status:'pending' }));
+  localStorage.setItem(OPERATIONS_KEY, JSON.stringify(q));
+}
+function operationResolve(opId) {
+  const q = operationQueue().filter(op => op.id !== opId);
+  localStorage.setItem(OPERATIONS_KEY, JSON.stringify(q));
+}
+function operationCount() { return operationQueue().filter(op => op.status === 'pending').length; }
+function activeTags() {
+  return (tags || []).map(normalizeTag).filter(t => !t.deletedAt).sort((a,b) => a.orderIndex - b.orderIndex || a.name.localeCompare(b.name, 'ru'));
+}
+function tagById(id) { return activeTags().find(t => t.id === id) || null; }
+function tagName(id) { return tagById(id)?.name || ''; }
+function tagIdByName(name) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return '';
+  const found = activeTags().find(t => t.name.toLowerCase() === n);
+  return found ? found.id : '';
+}
+function ensureTag(name, color = '#2563FF') {
+  const clean = String(name || '').replace(/^#/, '').trim();
+  if (!clean) return '';
+  const existing = tagIdByName(clean);
+  if (existing) return existing;
+  const palette = ['#2563FF','#22C55E','#F59E0B','#A855F7','#EF4444','#06B6D4'];
+  const tag = normalizeTag({ name: clean, color: color || palette[activeTags().length % palette.length] });
+  tags.unshift(tag);
+  saveTags();
+  operationAdd('create_tag','tag',tag.id,tag);
+  return tag.id;
+}
+function parseTagInput(value) {
+  return [...new Set(String(value || '').split(/[,\s#]+/).map(x => x.trim()).filter(Boolean))];
+}
+function taskTagIds(task) {
+  const raw = Array.isArray(task.tags) ? task.tags : Array.isArray(task.tagIds) ? task.tagIds : [];
+  return [...new Set(raw.filter(Boolean))];
+}
+function taskTagLabels(task) {
+  return taskTagIds(task).map(tagName).filter(Boolean);
+}
+function renderTagChips(task, { editable = false } = {}) {
+  const ids = taskTagIds(task);
+  if (!ids.length) return '';
+  return `<div class="task-tag-row">${ids.map(id => {
+    const tag = tagById(id);
+    if (!tag) return '';
+    return `<span class="tag-chip inline-tag" style="--tag-color:${escapeHtml(tag.color)}">#${escapeHtml(tag.name)}${editable ? `<button data-action="removeTaskTag" data-id="${task.id}" data-tag-id="${id}" type="button">×</button>` : ''}</span>`;
+  }).join('')}</div>`;
+}
+function addTagToTask(taskId, tagIdOrName) {
+  const tagId = tagById(tagIdOrName) ? tagIdOrName : ensureTag(tagIdOrName);
+  if (!tagId) return;
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  const ids = [...new Set([...taskTagIds(task), tagId])];
+  TaskService.update(taskId, { tags: ids }, { reason:'assign_tag' });
+}
+function removeTagFromTask(taskId, tagId) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  TaskService.update(taskId, { tags: taskTagIds(task).filter(id => id !== tagId) }, { reason:'remove_tag' });
+}
+function TaskServiceCreate(rawPayload) {
+  const task = normalizeTask(rawPayload);
+  tasks.unshift(task);
+  safetyRecordTask(task, 'pending');
+  reliableQueueAdd(task.id);
+  markTaskDirty(task.id);
+  operationAdd('create_task','task',task.id,task);
+  saveJournalAdd('saved-local', 'Задача сохранена локально', task);
+  persistAll({ renderNow:false, sync:false });
+  syncEngineUpsertTask(task.id, { silent:true, reason:'создание задачи' });
+  reliableFlushWriteQueue({ silent:true, reason:'task-service-create' });
+  operationFlushQueue({ silent:true, reason:'task-service-create' });
+  return task;
+}
+function TaskServiceUpdate(id, patch, { reason = 'update_task' } = {}) {
+  tasks = tasks.map(t => t.id === id ? normalizeTask({ ...t, ...patch, updatedAt: syncEngineNow() }) : t);
+  const task = tasks.find(t => t.id === id);
+  if (task) {
+    safetyRecordTask(task, patch.deletedAt ? 'deleted' : 'pending');
+    saveJournalAdd(reason, 'Изменение сохранено локально', task);
+    markTaskDirty(id);
+    reliableQueueAdd(id);
+    operationAdd(reason === 'delete_task' ? 'delete_task' : 'update_task', 'task', id, task);
+  }
+  persistAll({ renderNow:false, sync:false });
+  syncEngineUpsertTask(id, { silent:true, reason });
+  reliableFlushWriteQueue({ silent:true, reason:'task-service-update' });
+  operationFlushQueue({ silent:true, reason:'task-service-update' });
+  render();
+}
+function TaskServiceDelete(id) {
+  const task = tasks.find(t => normalizeTask(t).id === id);
+  const deletedAt = syncEngineNow();
+  tombstoneAdd(id, 'task-service-delete');
+  const payload = normalizeTask({ ...(task || { id, title:'Удалённая задача' }), id, deletedAt, updatedAt: deletedAt });
+  safetyRecordTask(payload, 'deleted');
+  operationAdd('delete_task','task',id,payload);
+  tasks = (tasks || []).map(normalizeTask).filter(t => t.id !== id);
+  persistAll({ renderNow:false, sync:false });
+  saveJournalAdd('deleted-local', 'Удаление сохранено', payload);
+  addSyncAudit('удаление задачи', task ? `удалена: ${task.title}` : id);
+  syncEngineUpsertDeletedTask(payload, { silent:true, reason:'удаление задачи' });
+  operationFlushQueue({ silent:true, reason:'delete-task' });
+  render();
+}
+const TaskService = { create: TaskServiceCreate, update: TaskServiceUpdate, delete: TaskServiceDelete };
+async function operationFlushQueue({ silent = true, reason = 'operation-flush' } = {}) {
+  const pair = await syncEngineGetUser({ silent:true });
+  if (!pair) return { sent:0, failed:['нет входа'] };
+  const { client, user } = pair;
+  const q = operationQueue().map(normalizeOperation).filter(op => op.status === 'pending');
+  let sent = 0;
+  const failed = [];
+  for (const op of q) {
+    try {
+      if (op.entity === 'task') {
+        if (op.type === 'delete_task') {
+          const payload = normalizeTask(op.payload || { id: op.entityId, title:'Удалённая задача', deletedAt: nowISO(), updatedAt: nowISO() });
+          await syncEngineUpsertDeletedTask(payload, { silent:true, reason:'operation-delete' });
+          tombstoneAdd(op.entityId, 'operation-delete-confirmed');
+        } else {
+          const task = tasks.find(t => t.id === op.entityId) || op.payload;
+          if (task && !tombstoneHas(op.entityId)) {
+            const row = cloudSafeTaskPayload(normalizeTask(task), user.id);
+            const { error } = await client.from('tasks').upsert(row, { onConflict:'id' });
+            if (error) throw error;
+          }
+        }
+      }
+      operationResolve(op.id);
+      sent += 1;
+    } catch (e) {
+      failed.push(`${op.type}:${op.entityId}: ${e.message || e}`);
+      const q2 = operationQueue().map(x => x.id === op.id ? normalizeOperation({ ...x, attempts:(x.attempts || 0) + 1, updatedAt: nowISO(), lastError:String(e.message || e) }) : x);
+      localStorage.setItem(OPERATIONS_KEY, JSON.stringify(q2));
+    }
+  }
+  if (!silent) setSyncState(`операции: отправлено ${sent}, ошибок ${failed.length}`, failed.length ? 'warn' : 'ok');
+  return { sent, failed };
+}
+function NavigationServiceOpen(view, opts = {}) {
+  currentView = view || 'commander';
+  if (opts.projectId) selectedProjectDetailId = opts.projectId;
+  if (opts.tagId) currentTaskFilter.tagId = opts.tagId;
+  render();
+  setTimeout(() => window.scrollTo({ top:0, behavior: opts.instant ? 'auto' : 'smooth' }), 0);
+}
+const NavigationService = { open: NavigationServiceOpen };
+async function architectureAutoSyncTick(reason = 'auto') {
+  if (document.hidden) return;
+  await reliableFlushWriteQueue({ silent:true, reason:'arch-' + reason });
+  await operationFlushQueue({ silent:true, reason:'arch-' + reason });
+  await taskLivePull({ reason:'arch-' + reason, visual:true });
+}
+
 /* ==============================
    v3.0.2 Stability & Work Console
    Hard local tombstones, stable UI state, workspace settings, project console.
@@ -1221,7 +1539,15 @@ function uiStateRead(){try{const raw=localStorage.getItem(UI_STATE_KEY);const ob
 function uiStateWrite(patch){const next={...uiStateRead(),...(patch||{})};localStorage.setItem(UI_STATE_KEY, JSON.stringify(next));return next;}
 function detailsOpenFlag(key){return Boolean(uiStateRead()[key]);}
 function setDetailsOpenFlag(key,value){uiStateWrite({[key]:Boolean(value)});}
-function workspaceDefaults(){return {preset:'leader',visibleViews:['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings'],cardFields:{project:true,status:true,priority:true,dates:true,note:true,sync:true},homeBlocks:{today:true,inbox:true,risks:true,projects:true,sync:true},showDiagnostics:false};}
+function workspaceDefaults() {
+  return {
+    preset: 'leader',
+    visibleViews: ['commander','alltasks','inbox','projects','kanban','mobile','pmcontrol','decisions','settings'],
+    cardFields: { project:true, status:true, priority:true, dates:true, note:true, sync:true, tags:true },
+    homeBlocks: { today:true, inbox:true, risks:true, projects:true, sync:true },
+    showDiagnostics: false
+  };
+}
 function workspaceRead(){try{const raw=localStorage.getItem(WORKSPACE_CONFIG_KEY);const obj=raw?JSON.parse(raw):{};const d=workspaceDefaults();return {...d,...(obj||{}),cardFields:{...d.cardFields,...((obj||{}).cardFields||{})},homeBlocks:{...d.homeBlocks,...((obj||{}).homeBlocks||{})}}}catch{return workspaceDefaults()}}
 function workspaceWrite(next){localStorage.setItem(WORKSPACE_CONFIG_KEY, JSON.stringify(next));}
 function setWorkspacePreset(preset){const cfg=workspaceRead(); cfg.preset=preset; if(preset==='minimal') cfg.visibleViews=['commander','inbox','projects','settings']; if(preset==='executor') cfg.visibleViews=['commander','inbox','kanban','settings']; if(preset==='reviewer') cfg.visibleViews=['commander','projects','pmcontrol','decisions','settings']; if(preset==='leader') cfg.visibleViews=['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings']; workspaceWrite(cfg); render();}
@@ -1287,9 +1613,8 @@ function parseRussianDateToken(text) {
 }
 function analyzeSmartCaptureText(raw) {
   const text = String(raw || '').trim();
-  const tags = [...text.matchAll(/#([A-Za-zА-Яа-яЁё0-9_-]+)/g)].map(m => m[1]);
-  const projectNameFromTag = tags[0] || '';
-  const projectId = projectNameFromTag ? ensureProject(projectNameFromTag, { persist:true }) : '';
+  const tagNames = [...text.matchAll(/#([A-Za-zА-Яа-яЁё0-9_-]+)/g)].map(m => m[1]);
+  const tagIds = tagNames.map(name => ensureTag(name)).filter(Boolean);
   const planDate = parseRussianDateToken(text);
   const dueDate = (/(?:до|срок|дедлайн)\s+\d{1,2}[.\-/]\d{1,2}/i.test(text)) ? planDate : '';
   const timeMatch = text.match(/\b(?:в\s*)?([01]?\d|2[0-3])[:.](\d{2})\b/);
@@ -1309,18 +1634,13 @@ function analyzeSmartCaptureText(raw) {
   if (!cleanTitle) cleanTitle = text;
   const noteBits = [];
   if (timeMatch) noteBits.push(`Время: ${timeMatch[1].padStart(2,'0')}:${timeMatch[2]}`);
-  if (tags.length) noteBits.push(`Теги: ${tags.map(t => '#' + t).join(' ')}`);
+  if (tagNames.length) noteBits.push(`Теги: ${tagNames.map(t => '#' + t).join(' ')}`);
   if (planDate && !dueDate) noteBits.push(`Когда делать: ${dateLabel(planDate)}`);
   if (dueDate) noteBits.push(`Срок: ${dateLabel(dueDate)}`);
   return {
-    cleanTitle,
-    projectId,
-    planDate: dueDate ? '' : planDate,
-    dueDate,
-    priority,
-    importance: urgent ? 'high' : 'low',
-    urgency: urgent || dueDate ? 'high' : 'low',
-    note: noteBits.join('\\n')
+    cleanTitle, projectId:'', tagIds, planDate: dueDate ? '' : planDate, dueDate,
+    priority, importance: urgent ? 'high' : 'low', urgency: urgent || dueDate ? 'high' : 'low',
+    note: noteBits.join('\n')
   };
 }
 function renderSmartCaptureCard() {
@@ -1351,7 +1671,7 @@ function renderProjectHealthBoard(limit = 6) {
     .slice(0, limit);
   return `<section class="card project-health-board">
     <div class="section-head compact-head"><div><span class="view-kicker">здоровье проектов</span><h3>Где требуется внимание</h3><p>Оценка по просрочке, ближайшим срокам, зависшим задачам и отсутствию следующего шага.</p></div></div>
-    <div class="health-list">${rows.map(({p,h}) => `<button class="health-row ${h.tone}" data-action="openProjects" data-project-id="${p.id}" type="button">
+    <div class="health-list">${rows.map(({p,h}) => `<button class="health-row ${h.tone}" data-action="openProjectDetail" data-project-id="${p.id}" type="button">
       <span><strong>${escapeHtml(p.name)}</strong><em>${h.active} активных · ${h.overdue} просрочено · ${h.soon} скоро</em></span>
       <b>${h.score}</b>
     </button>`).join('') || '<div class="empty">Активных проектов пока нет</div>'}</div>
@@ -1692,7 +2012,15 @@ function renderProjectPassport(p) {
   </details>`;
 }
 
-function renderProjectConsoleRow(p){const h=projectHealth(p.id);const count=activeTasks().filter(t=>t.projectId===p.id).length;return `<article class="project-console-row" data-project-id="${p.id}"><div class="project-console-main"><input class="project-name-input" value="${escapeHtml(p.name)}" data-project-id="${p.id}" aria-label="Название проекта"/><small>${count} задач · здоровье ${h.score} · ${h.overdue} просрочено</small></div><div class="task-actions"><button class="mini-btn" data-action="saveProjectName" data-project-id="${p.id}" type="button">Сохранить</button><button class="mini-btn" data-action="archiveProject" data-project-id="${p.id}" type="button">Архив</button><button class="mini-btn danger-mini" data-action="deleteProjectOnly" data-project-id="${p.id}" type="button">Удалить проект</button></div></article>`;}
+function renderProjectConsoleRow(p) {
+  const h = projectHealth(p.id);
+  const count = activeTasks().filter(t => t.projectId === p.id).length;
+  return `<article class="project-console-row" data-project-id="${p.id}">
+    <div class="project-console-main"><input class="project-name-input" value="${escapeHtml(p.name)}" data-project-id="${p.id}" aria-label="Название проекта"/><small>${count} задач · здоровье ${h.score} · ${h.overdue} просрочено</small></div>
+    <div class="task-actions"><button class="mini-btn primary-mini" data-action="openProjectDetail" data-project-id="${p.id}" type="button">Открыть</button><button class="mini-btn" data-action="saveProjectName" data-project-id="${p.id}" type="button">Сохранить</button><button class="mini-btn" data-action="archiveProject" data-project-id="${p.id}" type="button">Архив</button><button class="mini-btn danger-mini" data-action="deleteProjectOnly" data-project-id="${p.id}" type="button">Удалить проект</button></div>
+  </article>`;
+}
+
 function createProjectFromConsole(){const input=$('newProjectName');const name=input?.value.trim();if(!name)return alert('Укажите название проекта.');const p=normalizeProject({name,status:'active',startDate:today()});projects.unshift(p);persistAll({renderNow:false,sync:false});if(input)input.value='';render();}
 function saveProjectName(id){const input=document.querySelector(`.project-name-input[data-project-id="${CSS.escape(id)}"]`);const name=input?.value.trim();if(!name)return alert('Название проекта не должно быть пустым.');projects=projects.map(p=>p.id===id?normalizeProject({...p,name,updatedAt:nowISO()}):p);tasks=tasks.map(t=>t.projectId===id?normalizeTask({...t,project:name,updatedAt:nowISO()}):t);persistAll({renderNow:false,sync:false});render();}
 function archiveProject(id){projects=projects.map(p=>p.id===id?normalizeProject({...p,status:'archived',updatedAt:nowISO()}):p);persistAll({renderNow:false,sync:false});render();}
@@ -2285,7 +2613,7 @@ function syncLabPick(id) {
 
 function renderWorkspaceSettingsCard() {
   const cfg = workspaceRead();
-  const available = [['commander','День'],['inbox','Разбор'],['projects','Проекты'],['kanban','Канбан'],['mobile','Пульт'],['pmcontrol','Управление'],['decisions','Решения'],['settings','Синхронизация'],['searchall','Поиск'],['today','Сегодня'],['tomorrow','Завтра'],['week','Неделя'],['stuck','Зависло'],['delegate','Делегировать'],['noproject','Без проекта'],['promises','Обещания'],['timesheet','Табель'],['archive','Архив'],['about','О приложении']];
+  const available = [['commander','День'],['inbox','Разбор'],['projects','Проекты'],['kanban','Канбан'],['mobile','Пульт'],['pmcontrol','Управление'],['decisions','Решения'],['settings','Синхронизация'],['searchall','Поиск'], ['tags','Теги'],['today','Сегодня'],['tomorrow','Завтра'],['week','Неделя'],['stuck','Зависло'],['delegate','Делегировать'],['noproject','Без проекта'],['promises','Обещания'],['timesheet','Табель'],['archive','Архив'],['about','О приложении']];
   return `<section class="card workspace-settings-card"><div class="section-head compact-head"><div><span class="view-kicker">настройка пространства</span><h3>Что показывать в приложении</h3><p>Выберите режим и разделы меню.</p></div></div><div class="preset-row">${['leader','executor','reviewer','minimal'].map(p=>`<button class="preset-btn ${cfg.preset===p?'active':''}" data-action="workspacePreset" data-preset="${p}" type="button">${p==='leader'?'Руководитель':p==='executor'?'Исполнитель':p==='reviewer'?'Проверяющий':'Минимальный'}</button>`).join('')}</div><div class="workspace-view-grid">${available.map(([id,label])=>`<button class="workspace-toggle ${cfg.visibleViews.includes(id)?'active':''}" data-action="toggleWorkspaceView" data-view-id="${id}" type="button">${escapeHtml(label)}</button>`).join('')}</div><div class="task-actions sync-actions"><button class="ghost" data-action="toggleWorkspaceDiagnostics" type="button">${cfg.showDiagnostics?'Скрыть диагностику':'Показывать диагностику'}</button></div></section>`;
 }
 
@@ -2294,7 +2622,7 @@ function renderSettings() {
   const queue = typeof reliableQueueCount === 'function' ? reliableQueueCount() : dirtyTaskCount();
   const safety = typeof safetyLedgerCount === 'function' ? safetyLedgerCount() : 0;
   const cfg = workspaceRead();
-  return `<section class="settings-panel clean-settings work-console-screen"><section class="card work-screen-head"><div><span class="view-kicker">синхронизация</span><h2>Сохранение и устройства</h2><p>Главное: задачи не теряются. Если что-то не ушло в облако, оно остаётся локально и видно в очереди.</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'подключено':'нужен вход'}</span></section>${renderSafeSyncStatusCard()}<section class="device-login-card card"><div class="device-login-head"><div><span class="view-kicker">устройство</span><h3>${signedIn?'Компьютер подключён':'Подключить устройство'}</h3><p>${signedIn?'Сессия активна. Задачи сохраняются локально и отправляются в облако.':'Введите email, получите код и войдите.'}</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'вход выполнен':'не подключено'}</span></div><div class="email-code-grid"><label>Email<input id="syncEmail" value="${escapeHtml(settings.email||'')}" placeholder="name@example.com" inputmode="email" autocomplete="email"/></label><label>Код из письма<input id="emailOtpCode" value="" placeholder="6 цифр" inputmode="numeric" autocomplete="one-time-code" maxlength="12"/></label></div><div class="task-actions sync-actions"><button class="primary" id="sendEmailCode" type="button">Получить код</button><button class="primary" id="verifyEmailCode" type="button">Войти</button>${signedIn?'<button class="ghost" id="logoutCloud" type="button">Выйти</button>':''}</div></section><section class="card work-summary-card"><div class="section-head compact-head"><div><span class="view-kicker">состояние</span><h3>Краткая сводка</h3></div></div><div class="work-metrics-grid"><div><strong>${activeTasks().length}</strong><span>активных задач</span></div><div><strong>${queue}</strong><span>не отправлено</span></div><div><strong>${safety}</strong><span>под защитой</span></div><div><strong>${Object.keys(tombstoneRead()).length}</strong><span>удалено локально</span></div></div><div class="task-actions sync-actions"><button class="primary" id="forceAutoSyncNow" type="button">Отправить / обновить</button><button class="ghost" data-action="recoverMissingLocalTasks" type="button">Восстановить и дожать</button><button class="ghost" id="hardRefreshApp" type="button">Обновить приложение</button></div></section>${renderWorkspaceSettingsCard()}${renderSaveJournalCard(8)}<details class="card technical-diagnostics" data-ui-detail="technicalDiagnostics" ${detailsOpenFlag('technicalDiagnostics')?'open':''}><summary>Техническая диагностика</summary><div class="sync-diagnostics-grid diagnostic-mini"><div><strong>email:</strong> ${syncDiagnostics.email?escapeHtml(syncDiagnostics.email):escapeHtml(settings.email||'не указан')}</div><div><strong>user_id:</strong> ${syncDiagnostics.userId?escapeHtml(syncDiagnostics.userId):'не определён'}</div><div><strong>активных задач:</strong> ${activeTasks().length}</div><div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt||'не было'}</div><div><strong>последняя ошибка:</strong> ${escapeHtml(lastAppErrorText()||syncDiagnostics.lastError||'нет')}</div><div><strong>Live:</strong> ${escapeHtml(typeof taskLiveStatusText==='function'?taskLiveStatusText():'—')}</div></div>${renderSyncLab()}</details></section>`;
+  return `<section class="settings-panel clean-settings work-console-screen"><section class="card work-screen-head"><div><span class="view-kicker">синхронизация</span><h2>Сохранение и устройства</h2><p>Главное: задачи не теряются. Если что-то не ушло в облако, оно остаётся локально и видно в очереди.</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'подключено':'нужен вход'}</span></section>${renderSafeSyncStatusCard()}<section class="device-login-card card"><div class="device-login-head"><div><span class="view-kicker">устройство</span><h3>${signedIn?'Компьютер подключён':'Подключить устройство'}</h3><p>${signedIn?'Сессия активна. Задачи сохраняются локально и отправляются в облако.':'Введите email, получите код и войдите.'}</p></div><span class="device-login-status ${signedIn?'ok':'warn'}">${signedIn?'вход выполнен':'не подключено'}</span></div><div class="email-code-grid"><label>Email<input id="syncEmail" value="${escapeHtml(settings.email||'')}" placeholder="name@example.com" inputmode="email" autocomplete="email"/></label><label>Код из письма<input id="emailOtpCode" value="" placeholder="6 цифр" inputmode="numeric" autocomplete="one-time-code" maxlength="12"/></label></div><div class="task-actions sync-actions"><button class="primary" id="sendEmailCode" type="button">Получить код</button><button class="primary" id="verifyEmailCode" type="button">Войти</button>${signedIn?'<button class="ghost" id="logoutCloud" type="button">Выйти</button>':''}</div></section><section class="card work-summary-card"><div class="section-head compact-head"><div><span class="view-kicker">состояние</span><h3>Краткая сводка</h3></div></div><div class="work-metrics-grid"><div><strong>${activeTasks().length}</strong><span>активных задач</span></div><div><strong>${queue}</strong><span>не отправлено</span></div><div><strong>${operationCount()}</strong><span>операции</span></div><div><strong>${safety}</strong><span>под защитой</span></div><div><strong>${Object.keys(tombstoneRead()).length}</strong><span>удалено локально</span></div></div><div class="task-actions sync-actions"><button class="primary" id="forceAutoSyncNow" type="button">Отправить / обновить</button><button class="ghost" data-action="recoverMissingLocalTasks" type="button">Восстановить и дожать</button><button class="ghost" id="hardRefreshApp" type="button">Обновить приложение</button></div></section>${renderWorkspaceSettingsCard()}${renderSaveJournalCard(8)}<details class="card technical-diagnostics" data-ui-detail="technicalDiagnostics" ${detailsOpenFlag('technicalDiagnostics')?'open':''}><summary>Техническая диагностика</summary><div class="sync-diagnostics-grid diagnostic-mini"><div><strong>email:</strong> ${syncDiagnostics.email?escapeHtml(syncDiagnostics.email):escapeHtml(settings.email||'не указан')}</div><div><strong>user_id:</strong> ${syncDiagnostics.userId?escapeHtml(syncDiagnostics.userId):'не определён'}</div><div><strong>активных задач:</strong> ${activeTasks().length}</div><div><strong>последняя проверка:</strong> ${syncDiagnostics.lastCheckedAt||'не было'}</div><div><strong>последняя ошибка:</strong> ${escapeHtml(lastAppErrorText()||syncDiagnostics.lastError||'нет')}</div><div><strong>Live:</strong> ${escapeHtml(typeof taskLiveStatusText==='function'?taskLiveStatusText():'—')}</div></div>${renderSyncLab()}</details></section>`;
 }
 function renderAbout() {
   return `<section class="settings-panel card about-page">
@@ -2606,7 +2934,7 @@ function deleteProjectDoc(id) { projectDocs = projectDocs.map(d => d.id === id ?
 function userVisibleViews() {
   const cfg = workspaceRead();
   const base = Array.isArray(cfg.visibleViews) && cfg.visibleViews.length ? cfg.visibleViews : workspaceDefaults().visibleViews;
-  const all = ['commander','inbox','projects','kanban','mobile','pmcontrol','decisions','settings','searchall','today','tomorrow','week','stuck','delegate','noproject','promises','timesheet','archive','about'];
+  const all = ['commander','alltasks','inbox','projects','kanban','mobile','pmcontrol','decisions','settings','searchall','tags','today','tomorrow','week','stuck','delegate','noproject','promises','timesheet','archive','about'];
   return all.filter(v => base.includes(v));
 }
 function applyVisibleViews() {
@@ -2625,7 +2953,10 @@ function render() {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === currentView));
   applyVisibleViews();
   const root = $('viewRoot');
-  root.innerHTML = currentView === 'mobile' ? renderMobileCommand()
+  root.innerHTML = currentView === 'alltasks' ? renderAllTasks()
+    : currentView === 'projectdetail' ? renderProjectDetail()
+    : currentView === 'tags' ? renderTags()
+    : currentView === 'mobile' ? renderMobileCommand()
     : currentView === 'today' || currentView === 'tomorrow' ? renderToday()
     : currentView === 'week' ? renderWeek()
     : currentView === 'dashboard' ? renderDashboard()
@@ -2750,6 +3081,7 @@ function openEdit(id) {
   $('editId').value = t.id;
   $('editTitle').value = t.title;
   $('editProject').value = projectName(t.projectId, t.project) === 'Без проекта' ? '' : projectName(t.projectId, t.project);
+  if ($('editTags')) $('editTags').value = taskTagLabels(t).join(', ');
   $('editPlanDate').value = t.planDate;
   $('editDueDate').value = t.dueDate;
   $('editStatus').value = t.status;
@@ -2765,10 +3097,12 @@ function saveEdit(e) {
   const id = $('editId').value;
   const status = $('editStatus').value;
   const projectId = projectValueFromInput($('editProject').value);
+  const tagIds = parseTagInput($('editTags')?.value || '').map(name => ensureTag(name)).filter(Boolean);
   updateTask(id, {
     title: $('editTitle').value,
     projectId,
     project: projectName(projectId, ''),
+    tags: tagIds,
     planDate: $('editPlanDate').value,
     dueDate: $('editDueDate').value,
     status,
@@ -2851,7 +3185,15 @@ function bindDynamicActions() {
     if (action === 'saveProjectName') saveProjectName(btn.dataset.projectId || '');
     if (action === 'archiveProject') archiveProject(btn.dataset.projectId || '');
     if (action === 'deleteProjectOnly') deleteProjectOnly(btn.dataset.projectId || '');
-    if (action === 'clearQuickProject') { selectedQuickProjectId = ''; renderQuickTagBars(); }
+    if (action === 'openProjectDetail') openProjectDetail(btn.dataset.projectId || '');
+    if (action === 'createTagFromConsole') createTagFromConsole();
+    if (action === 'saveTagName') saveTagName(btn.dataset.tagId || '');
+    if (action === 'deleteTagOnly') deleteTagOnly(btn.dataset.tagId || '');
+    if (action === 'filterByTag') filterByTag(btn.dataset.tagId || '');
+    if (action === 'quickAddTagToTask') quickAddTagToTask(id);
+    if (action === 'removeTaskTag') removeTagFromTask(id, btn.dataset.tagId || '');
+    if (action === 'clearQuickTags') { selectedQuickTagIds = []; renderQuickTagBars(); }
+        if (action === 'clearQuickProject') { selectedQuickProjectId = ''; renderQuickTagBars(); }
     if (action === 'setKanbanMode') { settings.kanbanMode = btn.dataset.mode || 'compact'; saveSettings({ renderNow:false }); render(); }
     if (action === 'donePromise') donePromise(id);
     if (action === 'useTemplate') useTemplate(id);
@@ -2898,9 +3240,18 @@ function bindDynamicActions() {
   });
     document.querySelectorAll('[data-mobile-view]').forEach(btn => btn.onclick = () => { currentView = btn.dataset.mobileView || 'commander'; render(); });
   document.querySelectorAll('[data-mobile-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.mobileView === currentView));
-document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = () => {
-    const target = btn.closest('#editForm') ? 'edit' : 'quick';
-    applyQuickProject(btn.dataset.quickProject || '', target);
+document.querySelectorAll('[data-quick-tag]').forEach(btn => btn.onclick = () => {
+    const tagId = btn.dataset.quickTag || '';
+    selectedQuickTagIds = selectedQuickTagIds.includes(tagId) ? selectedQuickTagIds.filter(id => id !== tagId) : [...selectedQuickTagIds, tagId];
+    renderQuickTagBars();
+  });
+  document.querySelectorAll('[data-edit-tag]').forEach(btn => btn.onclick = () => {
+    const tag = tagById(btn.dataset.editTag || '');
+    const input = $('editTags');
+    if (tag && input) {
+      const list = parseTagInput(input.value);
+      if (!list.includes(tag.name)) input.value = [...list, tag.name].join(', ');
+    }
   });
   if ($('createProjectBtn')) $('createProjectBtn').onclick = createProjectFromForm;
   if ($('addPromiseBtn')) $('addPromiseBtn').onclick = addPromiseFromForm;
@@ -2916,6 +3267,10 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
   if ($('exportIcsBtn')) $('exportIcsBtn').onclick = exportCalendarIcs;
   if ($('runGlobalSearchBtn')) $('runGlobalSearchBtn').onclick = runGlobalSearchFromInput;
   if ($('globalSearchInput')) $('globalSearchInput').onkeydown = (e) => { if (e.key === 'Enter') runGlobalSearchFromInput(); };
+  if ($('allTaskSearch')) $('allTaskSearch').oninput = render;
+  if ($('allTaskStatus')) $('allTaskStatus').onchange = render;
+  if ($('allTaskProject')) $('allTaskProject').onchange = render;
+  if ($('allTaskTag')) $('allTaskTag').onchange = render;
   if ($('addQuickTagBtn')) $('addQuickTagBtn').onclick = createQuickTagFromInput;
   if ($('quickTagName')) $('quickTagName').onkeydown = (e) => { if (e.key === 'Enter') createQuickTagFromInput(); };
   if ($('addWorkLog')) $('addWorkLog').onclick = () => addWorkLog({ date: $('workDate').value, project: $('workProject').value, hours: $('workHours').value, mark: $('workMark').value, comment: $('workComment').value });
@@ -2938,7 +3293,7 @@ document.querySelectorAll('[data-quick-project]').forEach(btn => btn.onclick = (
     settings.seededProfileDefaultsCleaned = true;
     settings.autoArchiveDays = newArchiveDays;
     runAutoArchiveCompleted({ persist: false });
-    favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
+    // v3.1: quick tags are tags, not projects. Do not auto-create projects from old quick tag names.
     persistAll({ renderNow: true, sync: false });
     alert('Профиль сохранён. Если менялся срок автоархива, резервная копия уже выгружена.');
   };
@@ -4360,7 +4715,7 @@ function rowToDecision(r) { return normalizeDecision({ id:r.id, projectId:r.proj
 function taskTemplateToRow(t, userId) { const n = normalizeTaskTemplate(t); return { id:n.id, user_id:userId, name:n.name, title:n.title || null, project_id:n.projectId || null, status:n.status, priority:n.priority, importance:n.importance, urgency:n.urgency, day_bucket:n.dayBucket, note:n.note || null, created_at:n.createdAt, updated_at:n.updatedAt, deleted_at:n.deletedAt }; }
 function rowToTaskTemplate(r) { return normalizeTaskTemplate({ id:r.id, name:r.name, title:r.title || '', projectId:r.project_id || '', status:r.status, priority:r.priority, importance:r.importance, urgency:r.urgency, dayBucket:r.day_bucket, note:r.note || '', createdAt:r.created_at, updatedAt:r.updated_at, deletedAt:r.deleted_at }); }
 function taskToRow(t, userId) { const n = normalizeTask(t); return { id: n.id, user_id: userId, title: n.title, project_id: n.projectId || null, project: projectName(n.projectId, n.project) === 'Без проекта' ? null : projectName(n.projectId, n.project), due_date: n.dueDate || null, plan_date: n.planDate || null, status: n.status, priority: n.priority, importance: n.importance, urgency: n.urgency, note: n.note || null, day_bucket: n.dayBucket || 'none', order_index: n.orderIndex || 0, created_at: n.createdAt, updated_at: n.updatedAt, done_at: n.doneAt, archived_at: n.archivedAt, deleted_at: n.deletedAt }; }
-function rowToTask(r) { return normalizeTask({ id: r.id, title: r.title, projectId: r.project_id || '', project: r.project || '', dueDate: r.due_date || '', planDate: r.plan_date || '', status: r.status, priority: r.priority, importance: r.importance, urgency: r.urgency, note: r.note || '', dayBucket: r.day_bucket || 'none', orderIndex: r.order_index || 0, createdAt: r.created_at, updatedAt: r.updated_at, doneAt: r.done_at, archivedAt: r.archived_at, deletedAt: r.deleted_at }); }
+function rowToTask(r) { return normalizeTask({ id: r.id, title: r.title, projectId: r.project_id || '', project: r.project || '', dueDate: r.due_date || '', planDate: r.plan_date || '', status: r.status, priority: r.priority, importance: r.importance, urgency: r.urgency, note: r.note || '', dayBucket: r.day_bucket || 'none', orderIndex: r.order_index || 0, createdAt: r.created_at, updatedAt: r.updated_at, doneAt: r.done_at, archivedAt: r.archived_at, deletedAt: r.deleted_at, tags: r.tags || [] }); }
 function workLogToRow(l, userId) { const n = normalizeWorkLog(l); return { id: n.id, user_id: userId, work_date: n.date, project_id: n.projectId || null, project: projectName(n.projectId, n.project), hours: n.hours, mark: n.mark, comment: n.comment || null, created_at: n.createdAt, updated_at: n.updatedAt, deleted_at: n.deletedAt }; }
 function rowToWorkLog(r) { return normalizeWorkLog({ id: r.id, date: r.work_date, projectId: r.project_id || '', project: r.project || '', hours: r.hours, mark: r.mark, comment: r.comment || '', createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at }); }
 async function performSync({ silent = false, mode = 'full' } = {}) {
@@ -4419,6 +4774,7 @@ async function performSync({ silent = false, mode = 'full' } = {}) {
 const CLOUD_SCHEMA_READY = true;
 
 function migrateLocalData() {
+  tags = tags.map(normalizeTag);
   projects = projects.map(normalizeProject);
   projectMembers = projectMembers.map(normalizeProjectMember);
   promises = promises.map(normalizePromise);
@@ -4428,7 +4784,7 @@ function migrateLocalData() {
   adminUsers = adminUsers.map(normalizeAdminUser);
   settings.visibleViews = Array.isArray(settings.visibleViews) && settings.visibleViews.length ? settings.visibleViews : defaultVisibleViews();
   settings.dashboardWidgets = Array.isArray(settings.dashboardWidgets) && settings.dashboardWidgets.length ? settings.dashboardWidgets : defaultDashboardWidgets();
-  favoriteProjects().forEach(name => ensureProject(name, { persist: false }));
+  // v3.1: quick tags are tags, not projects. Do not auto-create projects from old quick tag names.
   [...tasks, ...workLogs].forEach(x => { if (x.project) ensureProject(x.project, { persist: false }); });
   tasks = tasks.map(normalizeTask);
   workLogs = workLogs.map(normalizeWorkLog);
@@ -4577,12 +4933,10 @@ function boot() {
   if ($('fieldPlanDate')) $('fieldPlanDate').value = today();
 
   document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => {
-    currentView = btn.dataset.view || 'commander';
-    render();
+    NavigationService.open(btn.dataset.view || 'commander');
   });
   document.querySelectorAll('[data-mobile-view]').forEach(btn => btn.onclick = () => {
-    currentView = btn.dataset.mobileView || 'commander';
-    render();
+    NavigationService.open(btn.dataset.mobileView || 'commander');
   });
 
   if ($('searchInput')) $('searchInput').oninput = render;
@@ -4615,6 +4969,7 @@ function boot() {
   setTimeout(() => {
     reliableFlushWriteQueue({ silent:true, reason:'boot-v3' });
     taskLiveStart({ reason:'boot-v3' });
+    architectureAutoSyncTick('boot');
   }, 1200);
 }
 boot();
@@ -4626,3 +4981,6 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { taskLiveStart({ reason:'visibility' }); taskLiveSchedulePull('visibility', 400, { visual:true }); }
 });
 window.addEventListener('focus', () => { reliableFlushWriteQueue({ silent:true, reason:'focus' }); taskLiveStart({ reason:'focus' }); taskLiveSchedulePull('focus', 500, { visual:true }); });
+
+// v3.1.0 architecture-auto-sync fallback
+setInterval(() => architectureAutoSyncTick('interval'), 10000);

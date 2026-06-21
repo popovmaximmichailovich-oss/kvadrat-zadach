@@ -203,3 +203,52 @@ create policy "Users can update own work logs" on public.work_logs for update to
 create policy "Users can delete own work logs" on public.work_logs for delete to authenticated using ((select auth.uid()) = user_id);
 
 NOTIFY pgrst, 'reload schema';
+
+
+-- v3.1.0 Architecture Reset: tags and task metadata
+alter table public.tasks add column if not exists tags jsonb default '[]'::jsonb;
+
+create table if not exists public.tags (
+  id uuid primary key,
+  user_id uuid not null default auth.uid(),
+  name text not null,
+  color text,
+  order_index bigint default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create table if not exists public.task_tags (
+  task_id uuid references public.tasks(id) on delete cascade,
+  tag_id uuid references public.tags(id) on delete cascade,
+  user_id uuid not null default auth.uid(),
+  created_at timestamptz not null default now(),
+  primary key(task_id, tag_id)
+);
+
+alter table public.tags enable row level security;
+alter table public.task_tags enable row level security;
+
+drop policy if exists "Users can select own tags" on public.tags;
+drop policy if exists "Users can insert own tags" on public.tags;
+drop policy if exists "Users can update own tags" on public.tags;
+drop policy if exists "Users can delete own tags" on public.tags;
+drop policy if exists "Users can select own task_tags" on public.task_tags;
+drop policy if exists "Users can insert own task_tags" on public.task_tags;
+drop policy if exists "Users can update own task_tags" on public.task_tags;
+drop policy if exists "Users can delete own task_tags" on public.task_tags;
+
+create policy "Users can select own tags" on public.tags for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own tags" on public.tags for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own tags" on public.tags for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own tags" on public.tags for delete to authenticated using ((select auth.uid()) = user_id);
+
+create policy "Users can select own task_tags" on public.task_tags for select to authenticated using ((select auth.uid()) = user_id);
+create policy "Users can insert own task_tags" on public.task_tags for insert to authenticated with check ((select auth.uid()) = user_id);
+create policy "Users can update own task_tags" on public.task_tags for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Users can delete own task_tags" on public.task_tags for delete to authenticated using ((select auth.uid()) = user_id);
+
+alter publication supabase_realtime add table public.tags;
+alter publication supabase_realtime add table public.task_tags;
+NOTIFY pgrst, 'reload schema';
